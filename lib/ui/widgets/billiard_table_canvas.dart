@@ -7,15 +7,16 @@ import '../../geometry/table_geometry.dart';
 import '../../models/models.dart';
 
 /// Bàn vẽ vector tĩnh theo mẫu TikZ (lòng bàn 188 x 376, khung -20..208 x -20..396)
-/// hỗ trợ chọn và kéo thả ba bi trong lòng bàn với độ chính xác từng pixel.
+/// hỗ trợ chọn và kéo thả ba bi trong lòng bàn với token giao dịch riêng cho từng lần kéo.
 class BilliardTableCanvas extends StatefulWidget {
   final DiagramScene scene;
   final String? selectedBallId;
   final ValueChanged<String> onBallTapped;
-  final bool Function(String ballId, DiagramPoint touchPoint) onBallDragStart;
-  final ValueChanged<DiagramPoint> onBallDragUpdateFromTouch;
-  final VoidCallback onBallDragEnd;
-  final VoidCallback onBallDragCancel;
+  final int? Function(String ballId, DiagramPoint touchPoint) onBallDragStart;
+  final void Function(DiagramPoint touchPoint, int dragToken)
+      onBallDragUpdateFromTouch;
+  final ValueChanged<int> onBallDragEnd;
+  final ValueChanged<int> onBallDragCancel;
   final ValueChanged<Ball>? onLockedBallTouched;
 
   const BilliardTableCanvas({
@@ -36,6 +37,7 @@ class BilliardTableCanvas extends StatefulWidget {
 
 class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
   int? _activePointerId;
+  int? _activeDragToken;
 
   @override
   Widget build(BuildContext context) {
@@ -51,10 +53,13 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
           behavior: HitTestBehavior.opaque,
           onPointerDown: (event) {
             if (_activePointerId != null) {
-              // Nếu có thêm ngón tay thứ hai chạm vào khi đang kéo, hủy dở thao tác kéo hiện tại
-              // để tránh nhảy vị trí bất thường.
+              // Ngón tay thứ hai chạm vào canvas trong lúc đang kéo -> hủy đúng giao dịch đang chạy.
+              final token = _activeDragToken;
               _activePointerId = null;
-              widget.onBallDragCancel();
+              _activeDragToken = null;
+              if (token != null) {
+                widget.onBallDragCancel(token);
+              }
               return;
             }
 
@@ -68,29 +73,39 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
 
             widget.onBallTapped(hit.id);
             final touchDiagram = mapper.screenToDiagram(event.localPosition);
-            final started = widget.onBallDragStart(hit.id, touchDiagram);
-            if (started) {
+            final token = widget.onBallDragStart(hit.id, touchDiagram);
+            if (token != null) {
               _activePointerId = event.pointer;
+              _activeDragToken = token;
             } else if (hit.locked) {
               widget.onLockedBallTouched?.call(hit);
             }
           },
           onPointerMove: (event) {
-            if (event.pointer != _activePointerId) {
+            final token = _activeDragToken;
+            if (event.pointer != _activePointerId || token == null) {
               return;
             }
             final touchDiagram = mapper.screenToDiagram(event.localPosition);
-            widget.onBallDragUpdateFromTouch(touchDiagram);
+            widget.onBallDragUpdateFromTouch(touchDiagram, token);
           },
           onPointerUp: (event) {
             if (event.pointer != _activePointerId) return;
+            final token = _activeDragToken;
             _activePointerId = null;
-            widget.onBallDragEnd();
+            _activeDragToken = null;
+            if (token != null) {
+              widget.onBallDragEnd(token);
+            }
           },
           onPointerCancel: (event) {
             if (event.pointer != _activePointerId) return;
+            final token = _activeDragToken;
             _activePointerId = null;
-            widget.onBallDragCancel();
+            _activeDragToken = null;
+            if (token != null) {
+              widget.onBallDragCancel(token);
+            }
           },
           child: CustomPaint(
             size: size,

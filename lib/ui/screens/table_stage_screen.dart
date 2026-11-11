@@ -6,8 +6,10 @@ import '../../state/table_editor_controller.dart';
 import '../widgets/billiard_table_canvas.dart';
 
 /// Màn hình Dựng thế bi độc lập (Phase 1):
-/// Cho phép đặt/kéo 3 bi trong lòng bàn, nhập tọa độ X/Y, khóa bi,
-/// bật/tắt lưới/diamond/số diamond và Undo/Redo/Đặt lại.
+/// - Chính sách trường nhập X/Y: theo dõi cờ sửa riêng cho từng ô (`_xDirty`, `_yDirty`) để
+///   không dùng chuỗi hiển thị ghi đè tọa độ thật của bi khi người dùng không sửa ô đó.
+/// - Khi có Undo/Redo/Đặt lại hoặc đổi bi được chọn, hủy nháp đang nhập dở và xóa focus có chủ đích
+///   để giá trị cũ trong ô nhập không bao giờ âm thầm ghi đè vị trí mới.
 class TableStageScreen extends StatefulWidget {
   final TableEditorController? controller;
 
@@ -32,6 +34,12 @@ class _TableStageScreenState extends State<TableStageScreen> {
   String? _coordinateError;
   String? _lastSyncedBallId;
   DiagramPoint? _lastSyncedCenter;
+  int _lastAuthoritativeRevision = -1;
+
+  String _syncedXText = '';
+  String _syncedYText = '';
+  bool _xDirty = false;
+  bool _yDirty = false;
 
   @override
   void initState() {
@@ -67,25 +75,52 @@ class _TableStageScreenState extends State<TableStageScreen> {
     if (ball == null) return;
 
     final ballChanged = ball.id != _lastSyncedBallId;
-    final posChanged = ball.center != _lastSyncedCenter;
+    final revisionChanged =
+        _controller.authoritativeRevision != _lastAuthoritativeRevision;
+    final posChangedDuringDragOrCancel =
+        ball.center != _lastSyncedCenter && (!_xDirty && !_yDirty);
 
-    if (force || ballChanged || (posChanged && !_xFocus.hasFocus && !_yFocus.hasFocus)) {
-      _xController.text = _formatCoord(ball.center.x);
-      _yController.text = _formatCoord(ball.center.y);
+    if (force ||
+        ballChanged ||
+        revisionChanged ||
+        _controller.isDraggingBall ||
+        posChangedDuringDragOrCancel) {
+      if ((ballChanged || revisionChanged) && (_xFocus.hasFocus || _yFocus.hasFocus)) {
+        _xFocus.unfocus();
+        _yFocus.unfocus();
+      }
+      _syncedXText = _formatCoord(ball.center.x);
+      _syncedYText = _formatCoord(ball.center.y);
+      _xController.value = TextEditingValue(
+        text: _syncedXText,
+        selection: TextSelection.collapsed(offset: _syncedXText.length),
+      );
+      _yController.value = TextEditingValue(
+        text: _syncedYText,
+        selection: TextSelection.collapsed(offset: _syncedYText.length),
+      );
+      _xDirty = false;
+      _yDirty = false;
       _lastSyncedBallId = ball.id;
       _lastSyncedCenter = ball.center;
-      if (ballChanged || posChanged) {
+      _lastAuthoritativeRevision = _controller.authoritativeRevision;
+      if (force || ballChanged || revisionChanged || _controller.isDraggingBall) {
         _coordinateError = null;
       }
     }
   }
 
   String _formatCoord(double v) {
-    final fixed = v.toStringAsFixed(1);
-    return fixed.endsWith('.0') ? fixed.substring(0, fixed.length - 2) : fixed;
+    var fixed = v.toStringAsFixed(3);
+    if (fixed.contains('.')) {
+      fixed = fixed.replaceFirst(RegExp(r'0+$'), '');
+      fixed = fixed.replaceFirst(RegExp(r'\.$'), '');
+    }
+    return fixed == '-0' ? '0' : fixed;
   }
 
   Future<void> _confirmDiscardAndExit() async {
+    if (_controller.isDraggingBall) return;
     if (!_controller.hasUnsavedChanges) {
       if (mounted) Navigator.of(context).pop();
       return;
@@ -117,6 +152,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
   }
 
   void _applyManualCoordinates() {
+    if (_controller.isDraggingBall) return;
     final ball = _controller.selectedBall;
     if (ball == null) return;
 
@@ -128,19 +164,46 @@ class _TableStageScreenState extends State<TableStageScreen> {
       return;
     }
 
-    final rawX = _xController.text.trim().replaceAll(',', '.');
-    final rawY = _yController.text.trim().replaceAll(',', '.');
-    final x = double.tryParse(rawX);
-    final y = double.tryParse(rawY);
-
-    if (x == null || y == null || !x.isFinite || !y.isFinite) {
+    // Nếu người dùng không sửa ô nào -> không di chuyển bi, không tạo bước Undo.
+    if (!_xDirty && !_yDirty) {
+      FocusScope.of(context).unfocus();
       setState(() {
-        _coordinateError = 'Vui lòng nhập số hữu hạn hợp lệ cho X và Y.';
+        _coordinateError = null;
       });
       return;
     }
 
-    final error = _controller.setBallPosition(ball.id, DiagramPoint(x, y));
+    double nextX = ball.center.x;
+    double nextY = ball.center.y;
+
+    if (_xDirty) {
+      final rawX = _xController.text.trim().replaceAll(',', '.');
+      final parsedX = double.tryParse(rawX);
+      if (parsedX == null || !parsedX.isFinite) {
+        setState(() {
+          _coordinateError = 'Vui lòng nhập số hữu hạn hợp lệ cho X.';
+        });
+        return;
+      }
+      nextX = parsedX;
+    }
+
+    if (_yDirty) {
+      final rawY = _yController.text.trim().replaceAll(',', '.');
+      final parsedY = double.tryParse(rawY);
+      if (parsedY == null || !parsedY.isFinite) {
+        setState(() {
+          _coordinateError = 'Vui lòng nhập số hữu hạn hợp lệ cho Y.';
+        });
+        return;
+      }
+      nextY = parsedY;
+    }
+
+    final error = _controller.setBallPosition(
+      ball.id,
+      DiagramPoint(nextX, nextY),
+    );
     if (error != null) {
       setState(() {
         _coordinateError = error;
@@ -156,6 +219,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
   }
 
   void _showDisplaySettingsSheet() {
+    if (_controller.isDraggingBall) return;
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -227,14 +291,17 @@ class _TableStageScreenState extends State<TableStageScreen> {
                           return ChoiceChip(
                             label: Text('r = ${r.toStringAsFixed(0)}'),
                             selected: selected,
-                            onSelected: (_) {
-                              final err = _controller.trySetBallRadius(r);
-                              if (err != null && context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text(err)),
-                                );
-                              }
-                            },
+                            onSelected: _controller.isDraggingBall
+                                ? null
+                                : (_) {
+                                    final err = _controller.trySetBallRadius(r);
+                                    if (err != null && context.mounted) {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        SnackBar(content: Text(err)),
+                                      );
+                                    }
+                                  },
                           );
                         }).toList(),
                       ),
@@ -253,11 +320,12 @@ class _TableStageScreenState extends State<TableStageScreen> {
   Widget build(BuildContext context) {
     final isLandscape =
         MediaQuery.sizeOf(context).width > MediaQuery.sizeOf(context).height;
+    final dragging = _controller.isDraggingBall;
 
     return PopScope(
-      canPop: !_controller.hasUnsavedChanges,
+      canPop: !dragging && !_controller.hasUnsavedChanges,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) {
+        if (!didPop && !dragging) {
           _confirmDiscardAndExit();
         }
       },
@@ -267,7 +335,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
           leading: IconButton(
             tooltip: 'Quay lại',
             icon: const Icon(Icons.arrow_back),
-            onPressed: _confirmDiscardAndExit,
+            onPressed: dragging ? null : _confirmDiscardAndExit,
           ),
           title: const Text(
             'Dựng thế bi',
@@ -290,13 +358,13 @@ class _TableStageScreenState extends State<TableStageScreen> {
               key: const Key('reset_button'),
               tooltip: 'Đặt lại',
               icon: const Icon(Icons.restart_alt),
-              onPressed: _controller.resetBalls,
+              onPressed: dragging ? null : _controller.resetBalls,
             ),
             IconButton(
               key: const Key('display_settings_button'),
               tooltip: 'Hiển thị bàn',
               icon: const Icon(Icons.tune),
-              onPressed: _showDisplaySettingsSheet,
+              onPressed: dragging ? null : _showDisplaySettingsSheet,
             ),
           ],
         ),
@@ -357,11 +425,22 @@ class _TableStageScreenState extends State<TableStageScreen> {
           scene: _controller.scene,
           selectedBallId: _controller.selectedBallId,
           onBallTapped: _controller.selectBall,
-          onBallDragStart: (ballId, touchPoint) =>
-              _controller.beginBallDrag(ballId, touchPoint: touchPoint),
-          onBallDragUpdateFromTouch: _controller.updateBallDragFromTouch,
-          onBallDragEnd: _controller.endBallDrag,
-          onBallDragCancel: _controller.cancelBallDrag,
+          onBallDragStart: (ballId, touchPoint) {
+            if (_xFocus.hasFocus || _yFocus.hasFocus) {
+              _xFocus.unfocus();
+              _yFocus.unfocus();
+            }
+            return _controller.beginBallDrag(ballId, touchPoint: touchPoint);
+          },
+          onBallDragUpdateFromTouch: (touchPoint, dragToken) =>
+              _controller.updateBallDragFromTouch(
+            touchPoint,
+            dragToken: dragToken,
+          ),
+          onBallDragEnd: (dragToken) =>
+              _controller.endBallDrag(dragToken: dragToken),
+          onBallDragCancel: (dragToken) =>
+              _controller.cancelBallDrag(dragToken: dragToken),
           onLockedBallTouched: (ball) {
             ScaffoldMessenger.of(context)
               ..hideCurrentSnackBar()
@@ -381,6 +460,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
     final selected = _controller.selectedBall;
     final view = _controller.viewSettings;
     final r = selected?.radius ?? TableConstants.defaultBallRadius;
+    final dragging = _controller.isDraggingBall;
 
     return Card(
       margin: EdgeInsets.zero,
@@ -390,7 +470,6 @@ class _TableStageScreenState extends State<TableStageScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Chọn bi
             Wrap(
               spacing: 6.0,
               runSpacing: 6.0,
@@ -410,7 +489,9 @@ class _TableStageScreenState extends State<TableStageScreen> {
                       ],
                     ),
                     selected: ball.id == _controller.selectedBallId,
-                    onSelected: (_) => _controller.selectBall(ball.id),
+                    onSelected: dragging
+                        ? null
+                        : (_) => _controller.selectBall(ball.id),
                   ),
               ],
             ),
@@ -423,16 +504,20 @@ class _TableStageScreenState extends State<TableStageScreen> {
                       key: const Key('coord_x_input'),
                       controller: _xController,
                       focusNode: _xFocus,
-                      enabled: !selected.locked,
+                      enabled: !selected.locked && !dragging,
                       keyboardType: const TextInputType.numberWithOptions(
                         decimal: true,
                         signed: true,
                       ),
                       decoration: InputDecoration(
-                        labelText: 'X (${r.toStringAsFixed(0)}..${(TableConstants.playfieldWidth - r).toStringAsFixed(0)})',
+                        labelText:
+                            'X (${r.toStringAsFixed(0)}..${(TableConstants.playfieldWidth - r).toStringAsFixed(0)})',
                         isDense: true,
                         border: const OutlineInputBorder(),
                       ),
+                      onChanged: (value) {
+                        _xDirty = value != _syncedXText;
+                      },
                       onSubmitted: (_) => _applyManualCoordinates(),
                     ),
                   ),
@@ -442,16 +527,20 @@ class _TableStageScreenState extends State<TableStageScreen> {
                       key: const Key('coord_y_input'),
                       controller: _yController,
                       focusNode: _yFocus,
-                      enabled: !selected.locked,
+                      enabled: !selected.locked && !dragging,
                       keyboardType: const TextInputType.numberWithOptions(
                         decimal: true,
                         signed: true,
                       ),
                       decoration: InputDecoration(
-                        labelText: 'Y (${r.toStringAsFixed(0)}..${(TableConstants.playfieldHeight - r).toStringAsFixed(0)})',
+                        labelText:
+                            'Y (${r.toStringAsFixed(0)}..${(TableConstants.playfieldHeight - r).toStringAsFixed(0)})',
                         isDense: true,
                         border: const OutlineInputBorder(),
                       ),
+                      onChanged: (value) {
+                        _yDirty = value != _syncedYText;
+                      },
                       onSubmitted: (_) => _applyManualCoordinates(),
                     ),
                   ),
@@ -460,7 +549,9 @@ class _TableStageScreenState extends State<TableStageScreen> {
                     height: 48.0,
                     child: FilledButton(
                       key: const Key('apply_coords_button'),
-                      onPressed: selected.locked ? null : _applyManualCoordinates,
+                      onPressed: (selected.locked || dragging)
+                          ? null
+                          : _applyManualCoordinates,
                       child: const Text('Đặt'),
                     ),
                   ),
@@ -469,7 +560,9 @@ class _TableStageScreenState extends State<TableStageScreen> {
                     key: const Key('lock_ball_button'),
                     tooltip: selected.locked ? 'Mở khóa bi' : 'Khóa bi',
                     icon: Icon(selected.locked ? Icons.lock : Icons.lock_open),
-                    onPressed: () => _controller.toggleBallLock(selected.id),
+                    onPressed: dragging
+                        ? null
+                        : () => _controller.toggleBallLock(selected.id),
                   ),
                 ],
               ),
@@ -488,7 +581,6 @@ class _TableStageScreenState extends State<TableStageScreen> {
             ],
             if (!compact) ...[
               const SizedBox(height: 8.0),
-              // Công tắc nhanh bật/tắt lưới, diamond, số diamond & thông tin trạng thái lưu
               Wrap(
                 spacing: 6.0,
                 runSpacing: 6.0,
@@ -557,4 +649,3 @@ class _BallDot extends StatelessWidget {
     );
   }
 }
-

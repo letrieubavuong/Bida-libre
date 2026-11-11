@@ -299,7 +299,7 @@ void main() {
 
       // 4. Khóa bi -> từ chối kéo và nhập X/Y
       controller.toggleBallLock('ball_white');
-      expect(controller.beginBallDrag('ball_white'), isFalse);
+      expect(controller.beginBallDrag('ball_white'), isNull);
       expect(
         controller.setBallPosition('ball_white', const DiagramPoint(50, 50)),
         contains('khóa'),
@@ -508,6 +508,346 @@ void main() {
       await tester.tap(find.text('Bỏ thay đổi'));
       await tester.pumpAndSettle();
       expect(find.byType(TableStageScreen), findsNothing);
+    });
+  });
+
+  group('Phản biện 1: Bảo vệ giao dịch kéo', () {
+    test('Không nhận beginBallDrag mới khi giao dịch trước chưa xử lý & token sai không hủy được kéo',
+        () {
+      final controller = TableEditorController();
+      final token1 = controller.beginBallDrag('ball_white');
+      expect(token1, isNotNull);
+      expect(controller.isDraggingBall, isTrue);
+
+      // Giao dịch khác chưa đóng -> từ chối beginBallDrag mới
+      expect(controller.beginBallDrag('ball_yellow'), isNull);
+      expect(controller.selectedBallId, 'ball_white');
+
+      // Token sai không thể kết thúc hoặc hủy giao dịch đang chạy
+      controller.updateBallDrag(const DiagramPoint(110, 110), dragToken: token1! + 99);
+      expect(controller.balls.first.center, const DiagramPoint(94, 94));
+      expect(controller.cancelBallDrag(dragToken: token1 + 99), isFalse);
+      expect(controller.endBallDrag(dragToken: token1 + 99), isFalse);
+      expect(controller.isDraggingBall, isTrue);
+
+      // Token đúng mới cập nhật và hủy được
+      controller.updateBallDrag(const DiagramPoint(110, 110), dragToken: token1);
+      expect(controller.balls.first.center, const DiagramPoint(110, 110));
+      expect(controller.cancelBallDrag(dragToken: token1), isTrue);
+      expect(controller.isDraggingBall, isFalse);
+      expect(controller.balls.first.center, const DiagramPoint(94, 94));
+    });
+
+    test('Đang kéo -> Undo bị chặn ở controller, thả tay mới tạo đúng 1 bước Undo', () {
+      final controller = TableEditorController();
+      // Tạo sẵn 1 bước lịch sử
+      controller.setBallPosition('ball_white', const DiagramPoint(80, 80));
+      expect(controller.undoHistory.length, 1);
+
+      // Bắt đầu kéo
+      final token = controller.beginBallDrag('ball_white');
+      expect(token, isNotNull);
+      controller.updateBallDrag(const DiagramPoint(120, 120), dragToken: token);
+
+      // Đang kéo -> Undo phải bị từ chối và không làm hỏng kéo
+      expect(controller.canUndo, isFalse);
+      expect(controller.undo(), isFalse);
+      expect(controller.isDraggingBall, isTrue);
+      expect(controller.balls.first.center, const DiagramPoint(120, 120));
+      expect(controller.undoHistory.length, 1);
+
+      // Thả tay kết thúc giao dịch kéo -> tạo 1 bước Undo thứ 2 theo đúng thứ tự
+      expect(controller.endBallDrag(dragToken: token), isTrue);
+      expect(controller.isDraggingBall, isFalse);
+      expect(controller.undoHistory.length, 2);
+      expect(controller.undo(), isTrue);
+      expect(controller.balls.first.center, const DiagramPoint(80, 80));
+    });
+
+    test('Đang kéo -> khóa bi -> cancel khôi phục đúng vị trí trước kéo và không bị khóa', () {
+      final controller = TableEditorController();
+      final token = controller.beginBallDrag('ball_white');
+      controller.updateBallDrag(const DiagramPoint(130, 140), dragToken: token);
+
+      // Đang kéo -> khóa bi bị vô hiệu hóa ở tầng controller
+      expect(controller.toggleBallLock('ball_white'), isFalse);
+      expect(controller.balls.first.locked, isFalse);
+
+      // Pan cancel -> khôi phục nguyên vẹn về (94, 94)
+      expect(controller.cancelBallDrag(dragToken: token), isTrue);
+      expect(controller.balls.first.center, const DiagramPoint(94, 94));
+      expect(controller.balls.first.locked, isFalse);
+      expect(controller.canUndo, isFalse);
+    });
+
+    test('Đang kéo -> Reset -> thả tay không ghi đè hoặc tạo lịch sử sai thứ tự', () {
+      final controller = TableEditorController();
+      controller.setBallPosition('ball_white', const DiagramPoint(60, 60));
+
+      final token = controller.beginBallDrag('ball_white');
+      controller.updateBallDrag(const DiagramPoint(125, 125), dragToken: token);
+
+      // Đang kéo -> Reset bị chặn ở tầng controller
+      expect(controller.resetBalls(), isFalse);
+      expect(controller.balls.first.center, const DiagramPoint(125, 125));
+
+      // Thả tay -> kết thúc giao dịch kéo hợp lệ
+      expect(controller.endBallDrag(dragToken: token), isTrue);
+      expect(controller.undoHistory.length, 2);
+
+      // Sau khi thả tay mới Reset được và Reset tạo bước Undo hợp lệ
+      expect(controller.resetBalls(), isTrue);
+      expect(controller.balls.first.center, const DiagramPoint(94, 94));
+      expect(controller.undoHistory.length, 3);
+    });
+
+    testWidgets('Hai ngón: một ngón giữ bi trên bàn, một ngón bấm toolbar bị vô hiệu hóa an toàn',
+        (WidgetTester tester) async {
+      final controller = TableEditorController();
+      controller.setBallPosition('ball_white', const DiagramPoint(80, 90));
+
+      await tester.pumpWidget(
+        MaterialApp(home: TableStageScreen(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+
+      final canvasFinder = find.byKey(const Key('billiard_table_canvas'));
+      final canvasTopLeft = tester.getTopLeft(canvasFinder);
+      final canvasSize = tester.getSize(canvasFinder);
+      final mapper = TableCoordinateMapper(canvasSize: canvasSize);
+
+      final whiteScreen = mapper.diagramToScreen(const DiagramPoint(80, 90));
+      final finger1 = await tester.startGesture(canvasTopLeft + whiteScreen);
+      await finger1.moveBy(const Offset(24.0, -24.0));
+      await tester.pump();
+
+      expect(controller.isDraggingBall, isTrue);
+      final draggedPos = controller.balls.first.center;
+
+      // Khi ngón 1 đang giữ bi, các nút toolbar xung đột đều bị vô hiệu hóa
+      expect(
+        tester.widget<IconButton>(find.byKey(const Key('undo_button'))).onPressed,
+        isNull,
+      );
+      expect(
+        tester.widget<IconButton>(find.byKey(const Key('reset_button'))).onPressed,
+        isNull,
+      );
+      expect(
+        tester.widget<IconButton>(find.byKey(const Key('lock_ball_button'))).onPressed,
+        isNull,
+      );
+
+      // Ngón 2 thử chạm trực tiếp vào nút Đặt lại và Khóa bi trên toolbar
+      final resetCenter = tester.getCenter(find.byKey(const Key('reset_button')));
+      final finger2Reset = await tester.startGesture(resetCenter);
+      await finger2Reset.up();
+      await tester.pump();
+
+      final lockCenter = tester.getCenter(find.byKey(const Key('lock_ball_button')));
+      final finger2Lock = await tester.startGesture(lockCenter);
+      await finger2Lock.up();
+      await tester.pump();
+
+      // Giao dịch kéo của ngón 1 vẫn nguyên vẹn, chưa bị ghi đè
+      expect(controller.isDraggingBall, isTrue);
+      expect(controller.balls.first.center, draggedPos);
+      expect(controller.balls.first.locked, isFalse);
+
+      // Ngón 1 thả tay -> ghi nhận đúng 1 bước Undo cho lần kéo
+      await finger1.up();
+      await tester.pumpAndSettle();
+
+      expect(controller.isDraggingBall, isFalse);
+      expect(controller.balls.first.center, draggedPos);
+      expect(controller.undoHistory.length, 2);
+    });
+  });
+
+  group('Phản biện 2: Bảo toàn độ chính xác tọa độ & xử lý ô nhập dở', () {
+    testWidgets('Tọa độ (94.04, 110.04) bấm Đặt không sửa giữ nguyên & không tạo Undo; chỉ sửa X giữ Y thật',
+        (WidgetTester tester) async {
+      final preciseScene = DiagramScene(
+        id: 'precise',
+        balls: const [
+          Ball(
+            id: 'ball_white',
+            color: BallColor.white,
+            label: '1',
+            center: DiagramPoint(94.0416, 110.0416),
+          ),
+          Ball(
+            id: 'ball_yellow',
+            color: BallColor.yellow,
+            label: '2',
+            center: DiagramPoint(70.0, 200.0),
+          ),
+          Ball(
+            id: 'ball_red',
+            color: BallColor.red,
+            label: '3',
+            center: DiagramPoint(118.0, 200.0),
+          ),
+        ],
+      );
+      final controller = TableEditorController(initialScene: preciseScene);
+
+      await tester.pumpWidget(
+        MaterialApp(home: TableStageScreen(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+
+      // Bấm Đặt khi không sửa X/Y -> không di chuyển bi, không tạo Undo
+      await tester.tap(find.byKey(const Key('apply_coords_button')));
+      await tester.pumpAndSettle();
+      expect(
+        controller.balls.first.center,
+        const DiagramPoint(94.0416, 110.0416),
+      );
+      expect(controller.canUndo, isFalse);
+
+      // Chỉ sửa X -> Y giữ nguyên đúng giá trị thật 110.0416 (không bị chuỗi làm tròn ghi đè)
+      await tester.enterText(find.byKey(const Key('coord_x_input')), '120.25');
+      await tester.tap(find.byKey(const Key('apply_coords_button')));
+      await tester.pumpAndSettle();
+      expect(
+        controller.balls.first.center,
+        const DiagramPoint(120.25, 110.0416),
+      );
+      expect(controller.undoHistory.length, 1);
+    });
+
+    testWidgets('Tọa độ (94.04, 110.04) và đặt hai bi vừa tiếp xúc tại tọa độ thập phân',
+        (WidgetTester tester) async {
+      final scene = DiagramScene(
+        id: 'decimal_touch',
+        balls: const [
+          Ball(
+            id: 'ball_white',
+            color: BallColor.white,
+            label: '1',
+            center: DiagramPoint(94.04, 110.04),
+          ),
+          Ball(
+            id: 'ball_yellow',
+            color: BallColor.yellow,
+            label: '2',
+            center: DiagramPoint(70.0, 200.0),
+          ),
+          Ball(
+            id: 'ball_red',
+            color: BallColor.red,
+            label: '3',
+            center: DiagramPoint(118.0, 200.0),
+          ),
+        ],
+      );
+      final controller = TableEditorController(initialScene: scene);
+
+      await tester.pumpWidget(
+        MaterialApp(home: TableStageScreen(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+
+      final xField = tester.widget<TextField>(find.byKey(const Key('coord_x_input')));
+      final yField = tester.widget<TextField>(find.byKey(const Key('coord_y_input')));
+      expect(xField.controller?.text, '94.04');
+      expect(yField.controller?.text, '110.04');
+
+      // Chọn bi vàng và đặt vừa tiếp xúc bi trắng tại (94.04, 118.04) (khoảng cách = 8.0 = 2r)
+      await tester.tap(find.byKey(const Key('select_ball_yellow')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('coord_x_input')), '94.04');
+      await tester.enterText(find.byKey(const Key('coord_y_input')), '118.04');
+      await tester.tap(find.byKey(const Key('apply_coords_button')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('coordinate_error_text')), findsNothing);
+      final yellow = controller.balls.firstWhere((b) => b.id == 'ball_yellow');
+      expect(yellow.center, const DiagramPoint(94.04, 118.04));
+
+      // Thử lấn vào 0.01 -> chồng bi -> phải từ chối
+      await tester.enterText(find.byKey(const Key('coord_y_input')), '118.03');
+      await tester.tap(find.byKey(const Key('apply_coords_button')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('chồng'), findsOneWidget);
+      expect(
+        controller.balls.firstWhere((b) => b.id == 'ball_yellow').center,
+        const DiagramPoint(94.04, 118.04),
+      );
+    });
+
+    testWidgets('Nhập dở trong lúc ô có focus -> Undo/Redo hủy nháp có chủ đích và không ghi đè vị trí mới',
+        (WidgetTester tester) async {
+      final controller = TableEditorController();
+      await tester.pumpWidget(
+        MaterialApp(home: TableStageScreen(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+
+      // Bước 1: Đặt bi trắng tới (120, 120)
+      await tester.enterText(find.byKey(const Key('coord_x_input')), '120');
+      await tester.enterText(find.byKey(const Key('coord_y_input')), '120');
+      await tester.tap(find.byKey(const Key('apply_coords_button')));
+      await tester.pumpAndSettle();
+      expect(controller.balls.first.center, const DiagramPoint(120, 120));
+
+      // Bước 2: Đang có focus ở ô X và nhập dở "175" (chưa bấm Đặt)
+      await tester.tap(find.byKey(const Key('coord_x_input')));
+      await tester.pump();
+      await tester.enterText(find.byKey(const Key('coord_x_input')), '175');
+      await tester.pump();
+      expect(
+        tester.widget<TextField>(find.byKey(const Key('coord_x_input'))).focusNode?.hasFocus,
+        isTrue,
+      );
+
+      // Bước 3: Bấm Hoàn tác (Undo) -> về (94, 94), xả focus và xóa nháp "175"
+      await tester.tap(find.byKey(const Key('undo_button')));
+      await tester.pumpAndSettle();
+      expect(controller.balls.first.center, const DiagramPoint(94, 94));
+      expect(
+        tester.widget<TextField>(find.byKey(const Key('coord_x_input'))).controller?.text,
+        '94',
+      );
+
+      // Bấm Đặt ngay sau Undo không làm giá trị cũ "175" âm thầm áp dụng
+      await tester.tap(find.byKey(const Key('apply_coords_button')));
+      await tester.pumpAndSettle();
+      expect(controller.balls.first.center, const DiagramPoint(94, 94));
+      expect(controller.canRedo, isTrue);
+
+      // Bước 4: Bấm Làm lại (Redo) -> về (120, 120) rồi nhập tiếp X = 135 (Y giữ 120)
+      await tester.tap(find.byKey(const Key('redo_button')));
+      await tester.pumpAndSettle();
+      expect(controller.balls.first.center, const DiagramPoint(120, 120));
+
+      await tester.enterText(find.byKey(const Key('coord_x_input')), '135');
+      await tester.tap(find.byKey(const Key('apply_coords_button')));
+      await tester.pumpAndSettle();
+      expect(controller.balls.first.center, const DiagramPoint(135, 120));
+    });
+
+    testWidgets('Từ chối Infinity, ngoài bàn và giữ nguyên vị trí hợp lệ',
+        (WidgetTester tester) async {
+      final controller = TableEditorController();
+      await tester.pumpWidget(
+        MaterialApp(home: TableStageScreen(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('coord_x_input')), 'Infinity');
+      await tester.tap(find.byKey(const Key('apply_coords_button')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('coordinate_error_text')), findsOneWidget);
+      expect(controller.balls.first.center, const DiagramPoint(94, 94));
+
+      await tester.enterText(find.byKey(const Key('coord_x_input')), '186');
+      await tester.tap(find.byKey(const Key('apply_coords_button')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('coordinate_error_text')), findsOneWidget);
+      expect(controller.balls.first.center, const DiagramPoint(94, 94));
     });
   });
 }

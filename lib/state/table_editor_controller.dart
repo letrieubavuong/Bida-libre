@@ -4,8 +4,10 @@ import '../geometry/table_geometry.dart';
 import '../models/models.dart';
 
 /// Quản lý trạng thái màn hình Dựng thế bi (Phase 1):
-/// - Chọn bi, kéo bi (giữ độ lệch ngón tay, 1 lần kéo = 1 bước undo), nhập tọa độ X/Y.
-/// - Khóa/mở khóa bi, đổi bán kính, đặt lại mặc định, Undo/Redo.
+/// - Chính sách giao dịch kéo: mỗi lần kéo có một `dragToken` duy nhất; trong lúc đang kéo
+///   (`isDraggingBall == true`), controller vô hiệu hóa mọi thao tác xung đột
+///   (beginBallDrag mới, undo, redo, resetBalls, toggleBallLock, setBallPosition,
+///   trySetBallRadius, selectBall) để không làm hỏng snapshot hoặc sai thứ tự lịch sử Undo.
 /// - Tất cả snapshot trong lịch sử Undo/Redo là DiagramScene bất biến (không dùng JSON copy).
 class TableEditorController extends ChangeNotifier {
   static const int _maxHistory = 100;
@@ -17,11 +19,16 @@ class TableEditorController extends ChangeNotifier {
   final List<DiagramScene> _undoStack = [];
   final List<DiagramScene> _redoStack = [];
 
-  // Trạng thái thao tác kéo đang diễn ra
+  int _nextDragToken = 1;
+  int? _activeDragToken;
   String? _draggingBallId;
   DiagramScene? _dragStartSceneSnapshot;
   DiagramPoint? _dragStartCenter;
   DiagramPoint _dragFingerOffset = const DiagramPoint(0.0, 0.0);
+
+  /// Tăng mỗi khi một lệnh hoàn chỉnh (undo/redo/reset/đặt tọa độ/khóa/đổi r) thay đổi scene,
+  /// giúp UI đồng bộ lại ô nhập X/Y và xóa nháp nhập dở có chủ đích.
+  int _authoritativeRevision = 0;
 
   TableEditorController({DiagramScene? initialScene})
       : _initialBaseline =
@@ -37,10 +44,12 @@ class TableEditorController extends ChangeNotifier {
   List<Ball> get balls => _scene.balls;
   SceneViewSettings get viewSettings => _scene.viewSettings;
   String? get selectedBallId => _selectedBallId;
-  bool get isDraggingBall => _draggingBallId != null;
+  bool get isDraggingBall => _activeDragToken != null;
+  int? get activeDragToken => _activeDragToken;
+  int get authoritativeRevision => _authoritativeRevision;
 
-  bool get canUndo => _undoStack.isNotEmpty;
-  bool get canRedo => _redoStack.isNotEmpty;
+  bool get canUndo => !isDraggingBall && _undoStack.isNotEmpty;
+  bool get canRedo => !isDraggingBall && _redoStack.isNotEmpty;
 
   /// Có thay đổi chưa lưu so với trạng thái ban đầu khi mở màn hình.
   bool get hasUnsavedChanges => !_ballsEqual(_scene.balls, _initialBaseline.balls);
@@ -59,10 +68,12 @@ class TableEditorController extends ChangeNotifier {
   /// Bản sao chỉ đọc của lịch sử Undo (dùng cho kiểm thử tính bất biến).
   List<DiagramScene> get undoHistory => List<DiagramScene>.unmodifiable(_undoStack);
 
-  void selectBall(String? ballId) {
-    if (_selectedBallId == ballId) return;
+  bool selectBall(String? ballId) {
+    if (isDraggingBall) return false;
+    if (_selectedBallId == ballId) return true;
     _selectedBallId = ballId;
     notifyListeners();
+    return true;
   }
 
   void _pushUndoSnapshot(DiagramScene previousScene) {
@@ -71,18 +82,25 @@ class TableEditorController extends ChangeNotifier {
       _undoStack.removeAt(0);
     }
     _redoStack.clear();
+    _authoritativeRevision++;
   }
 
-  /// Bắt đầu kéo một quả bi. Nếu [touchPoint] được truyền vào, lưu độ lệch giữa tâm bi
-  /// và điểm chạm ngón tay để khi bắt đầu kéo không làm bi nhảy về phía ngón tay.
-  bool beginBallDrag(String ballId, {DiagramPoint? touchPoint}) {
+  /// Bắt đầu một giao dịch kéo bi. Trả về `dragToken` nếu hợp lệ;
+  /// trả về `null` nếu đang có giao dịch kéo khác chưa xử lý, không tìm thấy bi hoặc bi đang khóa.
+  int? beginBallDrag(String ballId, {DiagramPoint? touchPoint}) {
+    if (isDraggingBall) return null;
+
     final ball = _findBall(ballId);
-    if (ball == null) return false;
+    if (ball == null) return null;
+
     _selectedBallId = ballId;
     if (ball.locked) {
       notifyListeners();
-      return false;
+      return null;
     }
+
+    final token = _nextDragToken++;
+    _activeDragToken = token;
     _draggingBallId = ballId;
     _dragStartSceneSnapshot = _scene;
     _dragStartCenter = ball.center;
@@ -90,17 +108,20 @@ class TableEditorController extends ChangeNotifier {
         ? (ball.center - touchPoint)
         : const DiagramPoint(0.0, 0.0);
     notifyListeners();
-    return true;
+    return token;
   }
 
   /// Cập nhật vị trí kéo từ tọa độ điểm chạm ngón tay trên bàn (giữ nguyên độ lệch ban đầu).
-  void updateBallDragFromTouch(DiagramPoint touchPoint) {
+  void updateBallDragFromTouch(DiagramPoint touchPoint, {int? dragToken}) {
     if (!touchPoint.isFinite) return;
-    updateBallDrag(touchPoint + _dragFingerOffset);
+    updateBallDrag(touchPoint + _dragFingerOffset, dragToken: dragToken);
   }
 
-  /// Cập nhật vị trí tâm bi mong muốn khi đang kéo; tự kẹp trong lòng bàn và chống chồng bi.
-  void updateBallDrag(DiagramPoint desiredCenter) {
+  /// Cập nhật vị trí tâm bi mong muốn khi đang kéo; chỉ tác động đúng `dragToken` đang hoạt động.
+  void updateBallDrag(DiagramPoint desiredCenter, {int? dragToken}) {
+    if (_activeDragToken == null) return;
+    if (dragToken != null && dragToken != _activeDragToken) return;
+
     final ballId = _draggingBallId;
     if (ballId == null) return;
     final ball = _findBall(ballId);
@@ -124,45 +145,56 @@ class TableEditorController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Kết thúc lần kéo: ghi nhận đúng 1 bước Undo chỉ khi tọa độ bi thực sự thay đổi.
-  void endBallDrag() {
+  /// Kết thúc giao dịch kéo đang hoạt động: ghi nhận đúng 1 bước Undo nếu tọa độ thực sự đổi.
+  bool endBallDrag({int? dragToken}) {
+    if (_activeDragToken == null) return false;
+    if (dragToken != null && dragToken != _activeDragToken) return false;
+
     final ballId = _draggingBallId;
     final snapshot = _dragStartSceneSnapshot;
     final startCenter = _dragStartCenter;
 
-    _draggingBallId = null;
-    _dragStartSceneSnapshot = null;
-    _dragStartCenter = null;
-    _dragFingerOffset = const DiagramPoint(0.0, 0.0);
+    _clearDragState();
 
-    if (ballId == null || snapshot == null || startCenter == null) return;
-
-    final currentBall = _findBall(ballId);
-    if (currentBall != null && currentBall.center != startCenter) {
-      _pushUndoSnapshot(snapshot);
-      notifyListeners();
+    if (ballId != null && snapshot != null && startCenter != null) {
+      final currentBall = _findBall(ballId);
+      if (currentBall != null && currentBall.center != startCenter) {
+        _pushUndoSnapshot(snapshot);
+      }
     }
+    notifyListeners();
+    return true;
   }
 
-  /// Xử lý pan cancel: hủy thao tác kéo đang dở, khôi phục về trước khi kéo, không tạo Undo dở dang.
-  void cancelBallDrag() {
-    final snapshot = _dragStartSceneSnapshot;
-    if (_draggingBallId == null) return;
+  /// Xử lý pan cancel: chỉ hủy đúng giao dịch kéo đang hoạt động, khôi phục về trước khi kéo.
+  bool cancelBallDrag({int? dragToken}) {
+    if (_activeDragToken == null) return false;
+    if (dragToken != null && dragToken != _activeDragToken) return false;
 
-    _draggingBallId = null;
-    _dragStartSceneSnapshot = null;
-    _dragStartCenter = null;
-    _dragFingerOffset = const DiagramPoint(0.0, 0.0);
+    final snapshot = _dragStartSceneSnapshot;
+    _clearDragState();
 
     if (snapshot != null) {
       _scene = snapshot;
     }
     notifyListeners();
+    return true;
+  }
+
+  void _clearDragState() {
+    _activeDragToken = null;
+    _draggingBallId = null;
+    _dragStartSceneSnapshot = null;
+    _dragStartCenter = null;
+    _dragFingerOffset = const DiagramPoint(0.0, 0.0);
   }
 
   /// Nhập tọa độ X/Y thủ công cho một quả bi (theo đơn vị sơ đồ).
-  /// Trả về thông báo lỗi tiếng Việt nếu không hợp lệ hoặc bi đang khóa; null nếu thành công.
+  /// Bị chặn nếu đang có giao dịch kéo hoạt động hoặc bi đang bị khóa.
   String? setBallPosition(String ballId, DiagramPoint newCenter) {
+    if (isDraggingBall) {
+      return 'Đang kéo bi, hãy thả tay trước khi sửa tọa độ.';
+    }
     final ball = _findBall(ballId);
     if (ball == null) return 'Không tìm thấy bi.';
     if (ball.locked) {
@@ -189,20 +221,26 @@ class TableEditorController extends ChangeNotifier {
     return null;
   }
 
-  /// Khóa hoặc mở khóa vị trí của một quả bi (tạo 1 bước Undo).
-  void toggleBallLock(String ballId) {
+  /// Khóa hoặc mở khóa vị trí của một quả bi (vô hiệu hóa trong lúc đang kéo).
+  bool toggleBallLock(String ballId) {
+    if (isDraggingBall) return false;
     final ball = _findBall(ballId);
-    if (ball == null) return;
+    if (ball == null) return false;
+
     _pushUndoSnapshot(_scene);
     final updatedBalls = _scene.balls
         .map((b) => b.id == ballId ? b.copyWith(locked: !b.locked) : b)
         .toList(growable: false);
     _scene = _scene.withBalls(updatedBalls);
     notifyListeners();
+    return true;
   }
 
-  /// Kiểm tra và thay đổi bán kính bi; nếu làm bố cục không hợp lệ thì báo lỗi và giữ nguyên.
+  /// Kiểm tra và thay đổi bán kính bi; bị chặn trong lúc đang kéo.
   String? trySetBallRadius(double newRadius) {
+    if (isDraggingBall) {
+      return 'Đang kéo bi, hãy thả tay trước khi đổi bán kính.';
+    }
     final error = BallPlacementValidator.validateLayoutForRadius(
       _scene.balls,
       newRadius,
@@ -222,29 +260,36 @@ class TableEditorController extends ChangeNotifier {
     return null;
   }
 
-  /// Đặt lại vị trí mặc định cho 3 bi (là một thao tác có thể Undo).
-  void resetBalls() {
+  /// Đặt lại vị trí mặc định cho 3 bi; bị chặn trong lúc đang kéo.
+  bool resetBalls() {
+    if (isDraggingBall) return false;
     final defaults = _initialBaseline.balls;
-    if (_ballsEqual(_scene.balls, defaults)) return;
+    if (_ballsEqual(_scene.balls, defaults)) return false;
+
     _pushUndoSnapshot(_scene);
     _scene = _scene.withBalls(defaults);
     notifyListeners();
+    return true;
   }
 
-  void undo() {
-    if (_undoStack.isEmpty) return;
+  bool undo() {
+    if (isDraggingBall || _undoStack.isEmpty) return false;
     _redoStack.add(_scene);
     final previous = _undoStack.removeLast();
     _scene = previous.copyWith(viewSettings: _scene.viewSettings);
+    _authoritativeRevision++;
     notifyListeners();
+    return true;
   }
 
-  void redo() {
-    if (_redoStack.isEmpty) return;
+  bool redo() {
+    if (isDraggingBall || _redoStack.isEmpty) return false;
     _undoStack.add(_scene);
     final next = _redoStack.removeLast();
     _scene = next.copyWith(viewSettings: _scene.viewSettings);
+    _authoritativeRevision++;
     notifyListeners();
+    return true;
   }
 
   void updateViewSettings(SceneViewSettings settings) {
