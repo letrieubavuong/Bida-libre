@@ -8,9 +8,17 @@ class DiagramPoint {
 
   const DiagramPoint(this.x, this.y);
 
+  bool get isFinite => x.isFinite && y.isFinite;
+
   DiagramPoint copyWith({double? x, double? y}) {
     return DiagramPoint(x ?? this.x, y ?? this.y);
   }
+
+  DiagramPoint operator +(DiagramPoint other) =>
+      DiagramPoint(x + other.x, y + other.y);
+
+  DiagramPoint operator -(DiagramPoint other) =>
+      DiagramPoint(x - other.x, y - other.y);
 
   double distanceTo(DiagramPoint other) {
     final dx = x - other.x;
@@ -21,10 +29,17 @@ class DiagramPoint {
   Map<String, dynamic> toJson() => {'x': x, 'y': y};
 
   factory DiagramPoint.fromJson(Map<String, dynamic> json) {
-    return DiagramPoint(
-      (json['x'] as num).toDouble(),
-      (json['y'] as num).toDouble(),
-    );
+    final rawX = json['x'];
+    final rawY = json['y'];
+    if (rawX is! num || rawY is! num) {
+      throw const FormatException('Tọa độ điểm phải là giá trị số.');
+    }
+    final x = rawX.toDouble();
+    final y = rawY.toDouble();
+    if (!x.isFinite || !y.isFinite) {
+      throw const FormatException('Tọa độ điểm phải hữu hạn.');
+    }
+    return DiagramPoint(x, y);
   }
 
   @override
@@ -39,7 +54,8 @@ class DiagramPoint {
   int get hashCode => Object.hash(x, y);
 
   @override
-  String toString() => 'DiagramPoint(${x.toStringAsFixed(2)}, ${y.toStringAsFixed(2)})';
+  String toString() =>
+      'DiagramPoint(${x.toStringAsFixed(2)}, ${y.toStringAsFixed(2)})';
 }
 
 /// Một quả bi trên bàn.
@@ -88,15 +104,47 @@ class Ball {
       };
 
   factory Ball.fromJson(Map<String, dynamic> json) {
+    final id = json['id'];
+    if (id is! String || id.trim().isEmpty) {
+      throw const FormatException('ID bi không hợp lệ.');
+    }
+    final rawRadius = json['radius'];
+    final radius = rawRadius == null
+        ? 4.0
+        : (rawRadius is num
+            ? rawRadius.toDouble()
+            : throw const FormatException('Bán kính bi phải là số.'));
+    if (!radius.isFinite || radius <= 0) {
+      throw const FormatException('Bán kính bi phải hữu hạn và lớn hơn 0.');
+    }
+    final centerJson = json['center'];
+    if (centerJson is! Map<String, dynamic>) {
+      throw const FormatException('Thiếu tọa độ tâm bi.');
+    }
     return Ball(
-      id: json['id'] as String,
+      id: id,
       color: BallColor.fromKey(json['color'] as String),
       label: (json['label'] as String?) ?? '',
-      center: DiagramPoint.fromJson(json['center'] as Map<String, dynamic>),
-      radius: (json['radius'] as num?)?.toDouble() ?? 4.0,
+      center: DiagramPoint.fromJson(centerJson),
+      radius: radius,
       locked: (json['locked'] as bool?) ?? false,
     );
   }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Ball &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          color == other.color &&
+          label == other.label &&
+          center == other.center &&
+          radius == other.radius &&
+          locked == other.locked;
+
+  @override
+  int get hashCode => Object.hash(id, color, label, center, radius, locked);
 }
 
 /// Đoạn trên đường hướng dẫn (thẳng hoặc Bézier bậc 3).
@@ -139,8 +187,10 @@ class PathSegment {
       return PathSegment.cubic(
         start: start,
         end: end,
-        control1: DiagramPoint.fromJson(json['control1'] as Map<String, dynamic>),
-        control2: DiagramPoint.fromJson(json['control2'] as Map<String, dynamic>),
+        control1:
+            DiagramPoint.fromJson(json['control1'] as Map<String, dynamic>),
+        control2:
+            DiagramPoint.fromJson(json['control2'] as Map<String, dynamic>),
       );
     }
   }
@@ -157,16 +207,16 @@ class GuidePath {
   final int? customColorValue;
   final String? startAnchorBallId; // Gắn điểm đầu với tâm bi sở hữu
 
-  const GuidePath({
+  GuidePath({
     required this.id,
     required this.ownerBallId,
     this.role = PathRole.ballCenter,
-    required this.segments,
+    required List<PathSegment> segments,
     this.isDashed = false,
     this.strokeWidth = 2.0,
     this.customColorValue,
     this.startAnchorBallId,
-  });
+  }) : segments = List<PathSegment>.unmodifiable(segments);
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -226,7 +276,8 @@ class DiagramAnnotation {
     return DiagramAnnotation(
       id: json['id'] as String,
       type: AnnotationType.fromKey(json['type'] as String),
-      position: DiagramPoint.fromJson(json['position'] as Map<String, dynamic>),
+      position:
+          DiagramPoint.fromJson(json['position'] as Map<String, dynamic>),
       text: (json['text'] as String?) ?? '',
       colorValue: json['colorValue'] as int?,
       locked: (json['locked'] as bool?) ?? false,
@@ -234,11 +285,101 @@ class DiagramAnnotation {
   }
 }
 
+/// Thiết lập hiển thị các lớp trên bàn sơ đồ (lưới, nút diamond, số diamond, số bi).
+class SceneViewSettings {
+  final bool showGrid;
+  final bool showDiamonds;
+  final bool showDiamondNumbers;
+  final bool showBallNumbers;
+  final Map<String, String> systemRailLabels;
+
+  SceneViewSettings({
+    this.showGrid = false,
+    this.showDiamonds = true,
+    this.showDiamondNumbers = true,
+    this.showBallNumbers = true,
+    Map<String, String> systemRailLabels = const {},
+  }) : systemRailLabels = Map<String, String>.unmodifiable(systemRailLabels);
+
+  const SceneViewSettings.defaults()
+      : showGrid = false,
+        showDiamonds = true,
+        showDiamondNumbers = true,
+        showBallNumbers = true,
+        systemRailLabels = const {};
+
+  SceneViewSettings copyWith({
+    bool? showGrid,
+    bool? showDiamonds,
+    bool? showDiamondNumbers,
+    bool? showBallNumbers,
+    Map<String, String>? systemRailLabels,
+  }) {
+    return SceneViewSettings(
+      showGrid: showGrid ?? this.showGrid,
+      showDiamonds: showDiamonds ?? this.showDiamonds,
+      showDiamondNumbers: showDiamondNumbers ?? this.showDiamondNumbers,
+      showBallNumbers: showBallNumbers ?? this.showBallNumbers,
+      systemRailLabels: systemRailLabels ?? this.systemRailLabels,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'showGrid': showGrid,
+        'showDiamonds': showDiamonds,
+        'showDiamondNumbers': showDiamondNumbers,
+        'showBallNumbers': showBallNumbers,
+        if (systemRailLabels.isNotEmpty) 'systemRailLabels': systemRailLabels,
+      };
+
+  factory SceneViewSettings.fromJson(Map<String, dynamic> json) {
+    return SceneViewSettings(
+      showGrid: (json['showGrid'] as bool?) ?? false,
+      showDiamonds: (json['showDiamonds'] as bool?) ?? true,
+      showDiamondNumbers: (json['showDiamondNumbers'] as bool?) ?? true,
+      showBallNumbers: (json['showBallNumbers'] as bool?) ?? true,
+      systemRailLabels: (json['systemRailLabels'] as Map<String, dynamic>?)
+              ?.map((k, v) => MapEntry(k, v as String)) ??
+          const {},
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other is! SceneViewSettings) return false;
+    if (showGrid != other.showGrid ||
+        showDiamonds != other.showDiamonds ||
+        showDiamondNumbers != other.showDiamondNumbers ||
+        showBallNumbers != other.showBallNumbers ||
+        systemRailLabels.length != other.systemRailLabels.length) {
+      return false;
+    }
+    for (final entry in systemRailLabels.entries) {
+      if (other.systemRailLabels[entry.key] != entry.value) return false;
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+        showGrid,
+        showDiamonds,
+        showDiamondNumbers,
+        showBallNumbers,
+        Object.hashAllUnordered(
+          systemRailLabels.entries.map((e) => Object.hash(e.key, e.value)),
+        ),
+      );
+}
+
 /// Sơ đồ vector hoàn chỉnh của một bàn bi.
 /// Hệ tọa độ lòng bàn: x: 0..188, y: 0..376 (tỉ lệ 1:2).
+/// Tất cả danh sách được bọc bất biến để an toàn cho undo/redo.
 class DiagramScene {
   static const double tableWidth = 188.0;
   static const double tableHeight = 376.0;
+  static const double _validationEpsilon = 1e-6;
 
   final String id;
   final int version; // Schema version (ví dụ: 1)
@@ -247,16 +388,45 @@ class DiagramScene {
   final List<Ball> balls;
   final List<GuidePath> paths;
   final List<DiagramAnnotation> annotations;
+  final SceneViewSettings viewSettings;
 
-  const DiagramScene({
+  DiagramScene({
     required this.id,
     this.version = 1,
     this.width = tableWidth,
     this.height = tableHeight,
-    required this.balls,
-    this.paths = const [],
-    this.annotations = const [],
-  });
+    required List<Ball> balls,
+    List<GuidePath> paths = const [],
+    List<DiagramAnnotation> annotations = const [],
+    this.viewSettings = const SceneViewSettings.defaults(),
+  })  : balls = List<Ball>.unmodifiable(balls),
+        paths = List<GuidePath>.unmodifiable(paths),
+        annotations = List<DiagramAnnotation>.unmodifiable(annotations);
+
+  DiagramScene copyWith({
+    String? id,
+    int? version,
+    double? width,
+    double? height,
+    List<Ball>? balls,
+    List<GuidePath>? paths,
+    List<DiagramAnnotation>? annotations,
+    SceneViewSettings? viewSettings,
+  }) {
+    return DiagramScene(
+      id: id ?? this.id,
+      version: version ?? this.version,
+      width: width ?? this.width,
+      height: height ?? this.height,
+      balls: balls ?? this.balls,
+      paths: paths ?? this.paths,
+      annotations: annotations ?? this.annotations,
+      viewSettings: viewSettings ?? this.viewSettings,
+    );
+  }
+
+  /// Tạo bản scene mới với danh sách bi mới (không chỉnh sửa scene hiện tại).
+  DiagramScene withBalls(List<Ball> newBalls) => copyWith(balls: newBalls);
 
   /// Tạo một scene mặc định có 3 bi (trắng, vàng, đỏ) ở các vị trí mẫu hợp lệ.
   factory DiagramScene.defaultInitial({required String id}) {
@@ -288,7 +458,53 @@ class DiagramScene {
       ],
       paths: const [],
       annotations: const [],
+      viewSettings: const SceneViewSettings.defaults(),
     );
+  }
+
+  /// Kiểm tra toàn vẹn dữ liệu scene phục vụ Phase 1.
+  /// Trả về thông báo lỗi tiếng Việt hoặc null nếu hoàn toàn hợp lệ.
+  String? validatePhase1() {
+    if (!width.isFinite || !height.isFinite || width <= 0 || height <= 0) {
+      return 'Kích thước lòng bàn phải là số hữu hạn lớn hơn 0.';
+    }
+    final seenIds = <String>{};
+    for (final ball in balls) {
+      if (ball.id.trim().isEmpty) {
+        return 'ID của bi không được để trống.';
+      }
+      if (!seenIds.add(ball.id)) {
+        return 'Phát hiện ID bi bị trùng: ${ball.id}.';
+      }
+      if (!ball.center.isFinite) {
+        return 'Tọa độ của ${ball.color.label} không hữu hạn.';
+      }
+      if (!ball.radius.isFinite || ball.radius <= 0) {
+        return 'Bán kính của ${ball.color.label} phải hữu hạn và lớn hơn 0.';
+      }
+      if (ball.radius * 2.0 > width || ball.radius * 2.0 > height) {
+        return 'Bán kính ${ball.radius} của ${ball.color.label} vượt quá kích thước bàn.';
+      }
+      if (ball.center.x < ball.radius - _validationEpsilon ||
+          ball.center.x > width - ball.radius + _validationEpsilon ||
+          ball.center.y < ball.radius - _validationEpsilon ||
+          ball.center.y > height - ball.radius + _validationEpsilon) {
+        return '${ball.color.label} nằm ngoài lòng bàn hợp lệ '
+            '[${ball.radius}, ${width - ball.radius}] x [${ball.radius}, ${height - ball.radius}].';
+      }
+    }
+
+    for (var i = 0; i < balls.length; i++) {
+      for (var j = i + 1; j < balls.length; j++) {
+        final a = balls[i];
+        final b = balls[j];
+        final minDist = a.radius + b.radius;
+        if (a.center.distanceTo(b.center) < minDist - _validationEpsilon) {
+          return '${a.color.label} và ${b.color.label} bị chồng lấp lên nhau.';
+        }
+      }
+    }
+    return null;
   }
 
   Map<String, dynamic> toJson() => {
@@ -299,15 +515,38 @@ class DiagramScene {
         'balls': balls.map((b) => b.toJson()).toList(),
         'paths': paths.map((p) => p.toJson()).toList(),
         'annotations': annotations.map((a) => a.toJson()).toList(),
+        'viewSettings': viewSettings.toJson(),
       };
 
   factory DiagramScene.fromJson(Map<String, dynamic> json) {
-    return DiagramScene(
-      id: json['id'] as String,
+    final id = json['id'];
+    if (id is! String || id.trim().isEmpty) {
+      throw const FormatException('ID sơ đồ không hợp lệ.');
+    }
+    final rawWidth = json['width'];
+    final rawHeight = json['height'];
+    final width = rawWidth == null
+        ? tableWidth
+        : (rawWidth is num
+            ? rawWidth.toDouble()
+            : throw const FormatException('Chiều rộng bàn phải là số.'));
+    final height = rawHeight == null
+        ? tableHeight
+        : (rawHeight is num
+            ? rawHeight.toDouble()
+            : throw const FormatException('Chiều dài bàn phải là số.'));
+
+    final rawBalls = json['balls'];
+    if (rawBalls is! List<dynamic>) {
+      throw const FormatException('Thiếu danh sách bi trong dữ liệu sơ đồ.');
+    }
+
+    final scene = DiagramScene(
+      id: id,
       version: (json['version'] as num?)?.toInt() ?? 1,
-      width: (json['width'] as num?)?.toDouble() ?? tableWidth,
-      height: (json['height'] as num?)?.toDouble() ?? tableHeight,
-      balls: (json['balls'] as List<dynamic>)
+      width: width,
+      height: height,
+      balls: rawBalls
           .map((b) => Ball.fromJson(b as Map<String, dynamic>))
           .toList(),
       paths: (json['paths'] as List<dynamic>?)
@@ -318,7 +557,17 @@ class DiagramScene {
               ?.map((a) => DiagramAnnotation.fromJson(a as Map<String, dynamic>))
               .toList() ??
           const [],
+      viewSettings: json['viewSettings'] != null
+          ? SceneViewSettings.fromJson(
+              json['viewSettings'] as Map<String, dynamic>,
+            )
+          : const SceneViewSettings.defaults(),
     );
+
+    final validationError = scene.validatePhase1();
+    if (validationError != null) {
+      throw FormatException(validationError);
+    }
+    return scene;
   }
 }
-

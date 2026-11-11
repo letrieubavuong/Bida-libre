@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../models/models.dart';
 import '../../state/notebook_controller.dart';
+import 'table_stage_screen.dart';
 
 class NotebookHomeScreen extends StatefulWidget {
   final NotebookController controller;
@@ -56,6 +57,14 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
     }
   }
 
+  void _openTableStage() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const TableStageScreen(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentKind = _controller.currentTab;
@@ -80,37 +89,26 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
           PopupMenuButton<String>(
             tooltip: 'Menu ứng dụng',
             onSelected: (value) {
-              if (value == 'settings') {
-                _showInfoDialog(
-                  context,
-                  title: 'Cài đặt',
-                  message: 'Cài đặt và cấu hình ứng dụng sẽ hoàn thiện trong các phase tiếp theo.',
-                );
-              } else if (value == 'backup') {
-                _showInfoDialog(
-                  context,
-                  title: 'Sao lưu & Khôi phục',
-                  message: 'Chức năng sao lưu và khôi phục tệp ZIP theo Phase 5.',
-                );
-              } else if (value == 'about') {
+              if (value == 'about') {
                 _showInfoDialog(
                   context,
                   title: 'Về LibreBilliard',
                   message:
-                      'LibreBilliard — Sổ tay kỹ thuật, bộ số và hình bi libre tĩnh.\n'
-                      'Phiên bản: 1.0.0 (Phase 0 Khung ứng dụng).\n'
-                      'Không sử dụng mô phỏng vật lý hay đồng bộ đám mây.',
+                      'LibreBilliard — Sổ tay kỹ thuật, bộ số và hình bi libre.\n'
+                      'Công cụ tra cứu và dựng sơ đồ bàn tĩnh, sử dụng ngoại tuyến.',
                 );
               }
             },
             itemBuilder: (context) => const [
               PopupMenuItem(
                 value: 'settings',
-                child: Text('Cài đặt'),
+                enabled: false,
+                child: Text('Cài đặt (sắp ra mắt)'),
               ),
               PopupMenuItem(
                 value: 'backup',
-                child: Text('Sao lưu / Khôi phục'),
+                enabled: false,
+                child: Text('Sao lưu / Khôi phục (sắp ra mắt)'),
               ),
               PopupMenuDivider(),
               PopupMenuItem(
@@ -172,20 +170,14 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
                 );
               },
             ),
-      floatingActionButton: FloatingActionButton(
-        tooltip: 'Tạo bài mới',
-        onPressed: () {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'Tạo bài mới cho ${currentKind.label} sẽ hoạt động tại Phase 4 (Bài viết & Thư viện).',
-              ),
-              duration: const Duration(seconds: 2),
-            ),
-          );
-        },
-        child: const Icon(Icons.add),
-      ),
+      floatingActionButton: currentKind == ArticleKind.position
+          ? FloatingActionButton.extended(
+              key: const Key('fab_open_table_stage'),
+              onPressed: _openTableStage,
+              icon: const Icon(Icons.edit_location_alt_outlined),
+              label: const Text('Dựng thế bi'),
+            )
+          : null,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tabIndex(currentKind),
         onDestinationSelected: (index) {
@@ -215,6 +207,7 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
   Widget _buildEmptyState(BuildContext context) {
     final hasFilters = _controller.hasActiveFilters;
     final currentKind = _controller.currentTab;
+    final isPositionTab = currentKind == ArticleKind.position;
 
     return Center(
       child: Padding(
@@ -223,7 +216,7 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
-              hasFilters ? Icons.search_off : Icons.library_books_outlined,
+              hasFilters ? Icons.filter_list_off : Icons.library_books_outlined,
               size: 64.0,
               color: Theme.of(context).colorScheme.outline,
             ),
@@ -241,20 +234,28 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
             Text(
               hasFilters
                   ? 'Hãy xóa bộ lọc để xem lại danh sách.'
-                  : 'Nhấn nút "+" bên dưới để tạo bài viết đầu tiên của bạn khi hoàn tất Phase 4.',
+                  : isPositionTab
+                      ? 'Bạn có thể mở bàn dựng để đặt thử vị trí ba bi ngay lúc này.'
+                      : 'Tính năng soạn bài viết đang được hoàn thiện ở bản cập nhật tới.',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(context).colorScheme.outline,
                   ),
               textAlign: TextAlign.center,
             ),
-            if (hasFilters) ...[
-              const SizedBox(height: 16.0),
+            const SizedBox(height: 16.0),
+            if (hasFilters)
               FilledButton.tonalIcon(
                 onPressed: _controller.clearFilters,
                 icon: const Icon(Icons.filter_alt_off),
                 label: const Text('Bỏ lọc'),
+              )
+            else if (isPositionTab)
+              FilledButton.icon(
+                key: const Key('empty_open_table_stage'),
+                onPressed: _openTableStage,
+                icon: const Icon(Icons.grid_on),
+                label: const Text('Dựng thế bi'),
               ),
-            ],
           ],
         ),
       ),

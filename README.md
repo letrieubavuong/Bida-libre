@@ -15,22 +15,28 @@ libre_billiard_notebook/
 ├── lib/
 │   ├── main.dart                     # Điểm khởi chạy ứng dụng Material 3
 │   ├── geometry/
-│   │   └── table_constants.dart      # Hằng số đơn vị sơ đồ bàn 188x376 (1:2)
+│   │   ├── table_constants.dart      # Hằng số đơn vị sơ đồ bàn 188x376 (1:2)
+│   │   └── table_geometry.dart       # Ánh xạ tọa độ bàn <-> màn hình & kiểm tra/kẹp vị trí bi
 │   ├── models/
 │   │   ├── enums.dart                # ArticleKind, Difficulty, PracticeStatus, BallColor...
 │   │   ├── article.dart              # Model bài viết (Kĩ thuật, Bộ số, Hình bi)
-│   │   ├── diagram_scene.dart        # Model scene vector tĩnh (Ball, GuidePath, Annotation)
+│   │   ├── diagram_scene.dart        # Model scene vector bất biến & validatePhase1()
 │   │   ├── library_meta.dart         # EditorialGroup, Tag, Collection, PracticeEntry, AssetRef
 │   │   └── models.dart               # Barrel exports
 │   ├── repositories/
-│   │   └── notebook_repository.dart  # Giao diện kho lưu trữ & InMemoryNotebookRepository (Phase 0)
+│   │   └── notebook_repository.dart  # Giao diện kho lưu trữ & InMemoryNotebookRepository
 │   ├── state/
-│   │   └── notebook_controller.dart  # Trạng thái điều hướng 3 tab & bộ lọc dùng chung
+│   │   ├── notebook_controller.dart  # Trạng thái điều hướng 3 tab & bộ lọc dùng chung
+│   │   └── table_editor_controller.dart # Trạng thái bàn dựng 3 bi, Undo/Redo, khóa & đặt lại
 │   └── ui/
-│       └── screens/
-│           └── notebook_home_screen.dart # Khung 3 tab, chip nhóm, lọc Yêu thích, menu & trạng thái rỗng
+│       ├── screens/
+│       │   ├── notebook_home_screen.dart # Khung 3 tab, chip nhóm, lọc Yêu thích & nút Dựng thế bi
+│       │   └── table_stage_screen.dart   # Màn hình Dựng thế bi dọc/ngang, nhập X/Y, hiển thị
+│       └── widgets/
+│           └── billiard_table_canvas.dart # CustomPainter bàn TikZ 1:2 & kéo thả 3 bi
 ├── test/
-│   └── widget_test.dart              # Kiểm thử NAV-01 & round-trip model Phase 0
+│   ├── widget_test.dart              # Kiểm thử NAV-01 & round-trip model
+│   └── phase1_table_test.dart        # Kiểm thử hình học, kéo thả, bất biến scene & bố cục Phase 1
 ├── AGENTS.md                         # Quy tắc làm việc cho agent trong dự án này
 └── README.md
 ```
