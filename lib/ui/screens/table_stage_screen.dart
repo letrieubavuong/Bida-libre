@@ -252,10 +252,11 @@ class _TableStageScreenState extends State<TableStageScreen> {
     }
   }
 
-  Future<void> _switchToSelectMode() async {
+  Future<void> _switchToolModeSafely(EditorToolMode targetMode) async {
     if (_controller.isEditingLocked) return;
-    if (!_controller.isDrawingWithDraft) {
-      _controller.setToolMode(EditorToolMode.select);
+    if (!_controller.isDrawingWithDraft ||
+        targetMode == EditorToolMode.drawPolyline) {
+      _controller.setToolMode(targetMode);
       return;
     }
 
@@ -288,9 +289,14 @@ class _TableStageScreenState extends State<TableStageScreen> {
     if (!mounted) return;
     if (action == 'complete') {
       final err = _controller.completeDraftPath();
-      if (err != null) _showSnack(err);
+      if (err != null) {
+        _showSnack(err);
+        return;
+      }
+      _controller.setToolMode(targetMode);
     } else if (action == 'cancel') {
       _controller.cancelDraftPath();
+      _controller.setToolMode(targetMode);
     }
   }
 
@@ -826,11 +832,11 @@ class _TableStageScreenState extends State<TableStageScreen> {
 
   Offset _clampToolbarOffset(Offset raw, Size areaSize) {
     const margin = 8.0;
-    final maxAllowedWidth = (areaSize.width - 72.0).clamp(120.0, 420.0);
+    final maxAllowedWidth = (areaSize.width - 72.0).clamp(120.0, 440.0);
     final box = _toolbarKey.currentContext?.findRenderObject() as RenderBox?;
     final fallbackWidth = _toolbarCollapsed
         ? 100.0
-        : (380.0 > maxAllowedWidth ? maxAllowedWidth : 380.0);
+        : (428.0 > maxAllowedWidth ? maxAllowedWidth : 428.0);
     final estWidth = box?.size.width ?? fallbackWidth;
     final estHeight = box?.size.height ?? 52.0;
 
@@ -865,10 +871,10 @@ class _TableStageScreenState extends State<TableStageScreen> {
                 constraints.maxWidth,
                 constraints.maxHeight,
               );
-              final maxAllowedWidth = (areaSize.width - 72.0).clamp(120.0, 420.0);
+              final maxAllowedWidth = (areaSize.width - 72.0).clamp(120.0, 440.0);
               final defaultToolbarWidth = _toolbarCollapsed
                   ? 100.0
-                  : (380.0 > maxAllowedWidth ? maxAllowedWidth : 380.0);
+                  : (428.0 > maxAllowedWidth ? maxAllowedWidth : 428.0);
               final initialOffset = Offset(
                 (areaSize.width - defaultToolbarWidth - 8.0)
                     .clamp(8.0, double.infinity),
@@ -894,14 +900,23 @@ class _TableStageScreenState extends State<TableStageScreen> {
                           selectedBallId: _controller.selectedBallId,
                           selectedPathId: _controller.selectedPathId,
                           selectedVertexIndex: _controller.selectedVertexIndex,
+                          selectedSegmentIndex:
+                              _controller.effectiveSelectedSegmentIndex,
+                          selectedControlHandle:
+                              _controller.selectedControlHandle,
+                          selectedAnnotationId:
+                              _controller.selectedAnnotationId,
                           invalidPathIds: warnings.keys.toSet(),
                           draftPoints: _controller.draftPoints,
                           draftOwnerBallId: _controller.draftOwnerBallId,
                           draftRole: _controller.draftRole,
                           snapSettings: _controller.snapSettings,
                           onBallTapped: _controller.selectBall,
-                          onPathTapped: (pathId) =>
-                              _controller.selectPath(pathId),
+                          onPathTapped: (pathId, {segmentIndex}) =>
+                              _controller.selectPath(
+                            pathId,
+                            segmentIndex: segmentIndex,
+                          ),
                           onBallDragStart: (ballId, touchPoint) {
                             if (_xFocus.hasFocus || _yFocus.hasFocus) {
                               _xFocus.unfocus();
@@ -944,6 +959,61 @@ class _TableStageScreenState extends State<TableStageScreen> {
                               _controller.endVertexDrag(dragToken: dragToken),
                           onVertexDragCancel: (dragToken) =>
                               _controller.cancelVertexDrag(dragToken: dragToken),
+                          onControlHandleDragStart:
+                              (pathId, segIndex, handleIndex, touchPoint) {
+                            return _controller.beginControlHandleDrag(
+                              pathId,
+                              segIndex,
+                              handleIndex,
+                              touchPoint: touchPoint,
+                            );
+                          },
+                          onControlHandleDragUpdateFromTouch:
+                              (touchPoint, dragToken) => _controller
+                                  .updateControlHandleDragFromTouch(
+                            touchPoint,
+                            dragToken: dragToken,
+                          ),
+                          onControlHandleDragEnd: (dragToken) =>
+                              _controller.endControlHandleDrag(
+                            dragToken: dragToken,
+                            onInvalidPath: _showSnack,
+                          ),
+                          onControlHandleDragCancel: (dragToken) =>
+                              _controller.cancelControlHandleDrag(
+                            dragToken: dragToken,
+                          ),
+                          onAnnotationTapped: _controller.selectAnnotation,
+                          onAnnotationDragStart: (annId, touchPoint) {
+                            return _controller.beginAnnotationDrag(
+                              annId,
+                              touchPoint: touchPoint,
+                              onBlocked: _showSnack,
+                            );
+                          },
+                          onAnnotationDragUpdateFromTouch:
+                              (touchPoint, dragToken) =>
+                                  _controller.updateAnnotationDragFromTouch(
+                            touchPoint,
+                            dragToken: dragToken,
+                          ),
+                          onAnnotationDragEnd: (dragToken) =>
+                              _controller.endAnnotationDrag(
+                            dragToken: dragToken,
+                          ),
+                          onAnnotationDragCancel: (dragToken) =>
+                              _controller.cancelAnnotationDrag(
+                            dragToken: dragToken,
+                          ),
+                          onLockedAnnotationTouched: (_) {
+                            _showSnack('Chú thích đang bị khóa vị trí.');
+                          },
+                          onAnnotationPlaceTapped: (pt) {
+                            _controller.addAnnotation(
+                              type: _controller.draftAnnotationType,
+                              position: pt,
+                            );
+                          },
                           onDrawPointPlaced: _controller.addDraftPoint,
                         ),
                       ),
@@ -1071,7 +1141,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
         loading || dragging || _controller.isDrawingWithDraft || _controller.isSaving;
 
     const btnConstraints = BoxConstraints(minWidth: 48.0, minHeight: 48.0);
-    final maxToolbarWidth = (areaSize.width - 72.0).clamp(120.0, 420.0);
+    final maxToolbarWidth = (areaSize.width - 72.0).clamp(120.0, 440.0);
 
     return ConstrainedBox(
       constraints: BoxConstraints(maxWidth: maxToolbarWidth),
@@ -1137,8 +1207,9 @@ class _TableStageScreenState extends State<TableStageScreen> {
                   padding: EdgeInsets.zero,
                   isSelected: _controller.toolMode == EditorToolMode.select,
                   icon: const Icon(Icons.pan_tool_alt_outlined),
-                  onPressed:
-                      (dragging || loading) ? null : _switchToSelectMode,
+                  onPressed: (dragging || loading)
+                      ? null
+                      : () => _switchToolModeSafely(EditorToolMode.select),
                 ),
                 IconButton(
                   key: const Key('mode_draw_chip'),
@@ -1150,7 +1221,22 @@ class _TableStageScreenState extends State<TableStageScreen> {
                   icon: const Icon(Icons.timeline),
                   onPressed: (dragging || loading)
                       ? null
-                      : () => _controller.setToolMode(EditorToolMode.drawPolyline),
+                      : () =>
+                          _switchToolModeSafely(EditorToolMode.drawPolyline),
+                ),
+                IconButton(
+                  key: const Key('mode_annotation_chip'),
+                  tooltip: 'Chú thích',
+                  constraints: btnConstraints,
+                  padding: EdgeInsets.zero,
+                  isSelected:
+                      _controller.toolMode == EditorToolMode.placeAnnotation,
+                  icon: const Icon(Icons.add_comment_outlined),
+                  onPressed: (dragging || loading)
+                      ? null
+                      : () => _switchToolModeSafely(
+                            EditorToolMode.placeAnnotation,
+                          ),
                 ),
                 IconButton(
                   key: const Key('undo_button'),
@@ -1246,9 +1332,16 @@ class _TableStageScreenState extends State<TableStageScreen> {
     if (_controller.toolMode == EditorToolMode.drawPolyline) {
       return _buildFloatingDrawPanel(context);
     }
+    if (_controller.toolMode == EditorToolMode.placeAnnotation) {
+      return _buildFloatingPlaceAnnotationPanel(context);
+    }
     final selectedPath = _controller.selectedPath;
     if (selectedPath != null) {
       return _buildFloatingPathPanel(context, selectedPath);
+    }
+    final selectedAnnotation = _controller.selectedAnnotation;
+    if (selectedAnnotation != null) {
+      return _buildFloatingAnnotationPanel(context, selectedAnnotation);
     }
     return _buildFloatingBallPanel(context);
   }
@@ -1329,6 +1422,10 @@ class _TableStageScreenState extends State<TableStageScreen> {
   Widget _buildFloatingPathPanel(BuildContext context, GuidePath path) {
     final locked = _controller.isEditingLocked;
     final isAnchored = path.startAnchorBallId != null;
+    final segIdx = _controller.effectiveSelectedSegmentIndex ?? 0;
+    final activeSeg = path.segments[segIdx];
+    final isCubic = activeSeg.type == SegmentType.cubic;
+    final isUnknown = activeSeg.type == SegmentType.unknown;
 
     return Material(
       key: const Key('floating_path_panel'),
@@ -1341,6 +1438,32 @@ class _TableStageScreenState extends State<TableStageScreen> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (path.segments.length > 1) ...[
+              ActionChip(
+                key: const Key('cycle_segment_button'),
+                label: Text('Đoạn ${segIdx + 1}/${path.segments.length}'),
+                onPressed: locked
+                    ? null
+                    : () => _controller.selectSegment(
+                          (segIdx + 1) % path.segments.length,
+                        ),
+              ),
+              const SizedBox(width: 6.0),
+            ],
+            if (!isUnknown) ...[
+              ActionChip(
+                key: const Key('convert_segment_button'),
+                avatar: Icon(
+                  isCubic ? Icons.show_chart : Icons.gesture,
+                  size: 16.0,
+                ),
+                label: Text(isCubic ? 'Về thẳng' : 'Thành cong'),
+                onPressed: locked
+                    ? null
+                    : _controller.toggleSelectedSegmentCurveType,
+              ),
+              const SizedBox(width: 6.0),
+            ],
             ActionChip(
               key: const Key('insert_vertex_button'),
               avatar: const Icon(Icons.add_circle_outline, size: 16.0),
@@ -1474,6 +1597,333 @@ class _TableStageScreenState extends State<TableStageScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildFloatingPlaceAnnotationPanel(BuildContext context) {
+    final locked = _controller.isEditingLocked;
+    return Material(
+      key: const Key('floating_place_annotation_panel'),
+      elevation: 6.0,
+      borderRadius: BorderRadius.circular(24.0),
+      color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.96),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final type in AnnotationType.values) ...[
+              ChoiceChip(
+                key: Key('place_ann_${type.storageKey}'),
+                showCheckmark: false,
+                label: Text(type.displayName),
+                selected: _controller.draftAnnotationType == type,
+                onSelected: locked
+                    ? null
+                    : (_) => _controller.setDraftAnnotationType(type),
+              ),
+              const SizedBox(width: 4.0),
+            ],
+            Text(
+              'Chạm bàn để đặt',
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
+            const SizedBox(width: 4.0),
+            IconButton(
+              key: const Key('close_place_annotation_button'),
+              tooltip: 'Xong',
+              icon: const Icon(Icons.close),
+              onPressed: locked
+                  ? null
+                  : () => _controller.setToolMode(EditorToolMode.select),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFloatingAnnotationPanel(
+    BuildContext context,
+    DiagramAnnotation ann,
+  ) {
+    final locked = _controller.isEditingLocked;
+    return Material(
+      key: const Key('floating_annotation_panel'),
+      elevation: 6.0,
+      borderRadius: BorderRadius.circular(24.0),
+      color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.96),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Chip(
+              label: Text(
+                ann.text.isNotEmpty
+                    ? '${ann.type.displayName}: ${ann.text}'
+                    : ann.type.displayName,
+              ),
+            ),
+            const SizedBox(width: 6.0),
+            ActionChip(
+              key: const Key('edit_annotation_button'),
+              avatar: const Icon(Icons.edit_outlined, size: 16.0),
+              label: const Text('Sửa & Kích thước'),
+              onPressed:
+                  locked ? null : () => _showAnnotationEditSheet(ann.id),
+            ),
+            const SizedBox(width: 6.0),
+            IconButton.filledTonal(
+              key: const Key('lock_annotation_button'),
+              tooltip: ann.locked ? 'Mở khóa chú thích' : 'Khóa chú thích',
+              icon: Icon(ann.locked ? Icons.lock : Icons.lock_open),
+              onPressed: locked
+                  ? null
+                  : () => _controller.toggleAnnotationLock(ann.id),
+            ),
+            const SizedBox(width: 4.0),
+            ActionChip(
+              key: const Key('delete_annotation_button'),
+              avatar: const Icon(Icons.delete_outline, size: 16.0),
+              label: const Text('Xóa'),
+              onPressed: locked ? null : _controller.deleteSelectedAnnotation,
+            ),
+            const SizedBox(width: 4.0),
+            IconButton(
+              tooltip: 'Đóng chọn chú thích',
+              icon: const Icon(Icons.close),
+              onPressed:
+                  locked ? null : () => _controller.selectAnnotation(null),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showAnnotationEditSheet(String annotationId) {
+    if (_controller.isEditingLocked) return;
+    final ann = _controller.selectedAnnotation;
+    if (ann == null || ann.id != annotationId) return;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _AnnotationEditSheet(
+        controller: _controller,
+        annotationId: annotationId,
+      ),
+    );
+  }
+}
+
+class _AnnotationEditSheet extends StatefulWidget {
+  final TableEditorController controller;
+  final String annotationId;
+
+  const _AnnotationEditSheet({
+    required this.controller,
+    required this.annotationId,
+  });
+
+  @override
+  State<_AnnotationEditSheet> createState() => _AnnotationEditSheetState();
+}
+
+class _AnnotationEditSheetState extends State<_AnnotationEditSheet> {
+  late final TextEditingController _textCtrl;
+  late final TextEditingController _widthCtrl;
+  late final TextEditingController _heightCtrl;
+  late final TextEditingController _radiusCtrl;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final ann = widget.controller.selectedAnnotation!;
+    _textCtrl = TextEditingController(text: ann.text);
+    _widthCtrl = TextEditingController(text: ann.width.toStringAsFixed(1));
+    _heightCtrl = TextEditingController(text: ann.height.toStringAsFixed(1));
+    _radiusCtrl = TextEditingController(text: ann.radius.toStringAsFixed(1));
+  }
+
+  @override
+  void dispose() {
+    _textCtrl.dispose();
+    _widthCtrl.dispose();
+    _heightCtrl.dispose();
+    _radiusCtrl.dispose();
+    super.dispose();
+  }
+
+  void _apply() {
+    final ann = widget.controller.selectedAnnotation;
+    if (ann == null || ann.id != widget.annotationId) return;
+
+    double? w;
+    double? h;
+    double? r;
+    if (ann.type == AnnotationType.rectZone) {
+      w = double.tryParse(_widthCtrl.text.trim().replaceAll(',', '.'));
+      h = double.tryParse(_heightCtrl.text.trim().replaceAll(',', '.'));
+      if (w == null || h == null || !w.isFinite || !h.isFinite || w <= 0 || h <= 0) {
+        setState(() => _error = 'Chiều rộng và chiều cao phải là số dương.');
+        return;
+      }
+    } else if (ann.type == AnnotationType.circleZone ||
+        ann.type == AnnotationType.marker) {
+      r = double.tryParse(_radiusCtrl.text.trim().replaceAll(',', '.'));
+      if (r == null || !r.isFinite || r <= 0) {
+        setState(() => _error = 'Bán kính phải là số dương.');
+        return;
+      }
+    }
+
+    final err = widget.controller.updateSelectedAnnotation(
+      text: _textCtrl.text.trim(),
+      width: w,
+      height: h,
+      radius: r,
+    );
+    if (err != null) {
+      setState(() => _error = err);
+      return;
+    }
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: widget.controller,
+      builder: (context, _) {
+        final ann = widget.controller.selectedAnnotation;
+        if (ann == null || ann.id != widget.annotationId) {
+          return const SizedBox.shrink();
+        }
+        final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+        final colorChoices = <(String, int?)>[
+          ('Mặc định', null),
+          ('Trắng', 0xFFFFFFFF),
+          ('Vàng', 0xFFFFD54F),
+          ('Ngọc', 0xFF80DEEA),
+          ('Lục', 0xFFA5D6A7),
+          ('Cam', 0xFFFFCC80),
+        ];
+
+        return SafeArea(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.fromLTRB(16.0, 0.0, 16.0, 16.0 + bottomInset),
+            child: Column(
+              key: const Key('annotation_edit_sheet'),
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Chỉnh ${ann.type.displayName}',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+                const SizedBox(height: 12.0),
+                TextField(
+                  key: const Key('ann_text_input'),
+                  controller: _textCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Nội dung / Nhãn',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 10.0),
+                if (ann.type == AnnotationType.rectZone) ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          key: const Key('ann_width_input'),
+                          controller: _widthCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(
+                            labelText: 'Rộng',
+                            isDense: true,
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8.0),
+                      Expanded(
+                        child: TextField(
+                          key: const Key('ann_height_input'),
+                          controller: _heightCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(
+                            labelText: 'Cao',
+                            isDense: true,
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10.0),
+                ] else if (ann.type == AnnotationType.circleZone ||
+                    ann.type == AnnotationType.marker) ...[
+                  TextField(
+                    key: const Key('ann_radius_input'),
+                    controller: _radiusCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      labelText: 'Bán kính',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 10.0),
+                ],
+                Wrap(
+                  spacing: 6.0,
+                  children: colorChoices.map((entry) {
+                    final selected = entry.$2 == null
+                        ? ann.colorValue == null
+                        : ann.colorValue == entry.$2;
+                    return ChoiceChip(
+                      label: Text(entry.$1),
+                      selected: selected,
+                      onSelected: (_) => widget.controller.updateSelectedAnnotation(
+                        colorValue: entry.$2,
+                        clearColor: entry.$2 == null,
+                      ),
+                    );
+                  }).toList(),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Nét đứt'),
+                  value: ann.isDashed,
+                  onChanged: (v) =>
+                      widget.controller.updateSelectedAnnotation(isDashed: v),
+                ),
+                if (_error != null) ...[
+                  Text(
+                    _error!,
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
+                  const SizedBox(height: 8.0),
+                ],
+                FilledButton(
+                  key: const Key('apply_annotation_button'),
+                  onPressed: _apply,
+                  child: const Text('Áp dụng'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

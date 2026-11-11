@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../geometry/annotation_geometry.dart';
 import '../geometry/path_geometry.dart';
 import '../geometry/table_geometry.dart';
 import '../models/models.dart';
@@ -7,7 +8,8 @@ import '../repositories/scene_storage.dart';
 
 enum EditorToolMode {
   select('Chọn / Di chuyển'),
-  drawPolyline('Vẽ đường');
+  drawPolyline('Vẽ đường'),
+  placeAnnotation('Chú thích');
 
   const EditorToolMode(this.label);
   final String label;
@@ -59,6 +61,9 @@ class TableEditorController extends ChangeNotifier {
   String? _selectedBallId;
   String? _selectedPathId;
   int? _selectedVertexIndex;
+  int? _selectedSegmentIndex;
+  ({int segmentIndex, int handleIndex})? _selectedControlHandle;
+  String? _selectedAnnotationId;
 
   EditorToolMode _toolMode = EditorToolMode.select;
   SnapSettings _snapSettings = const SnapSettings();
@@ -67,12 +72,14 @@ class TableEditorController extends ChangeNotifier {
   PathRole _draftRole = PathRole.ballCenter;
   bool _draftAnchorStart = false;
   final List<DiagramPoint> _draftPoints = [];
+  AnnotationType _draftAnnotationType = AnnotationType.label;
 
   final List<DiagramScene> _undoStack = [];
   final List<DiagramScene> _redoStack = [];
 
   int _nextDragToken = 1;
   int _nextPathCounter = 1;
+  int _nextAnnotationCounter = 1;
 
   int? _activeDragToken;
   String? _draggingBallId;
@@ -86,6 +93,20 @@ class TableEditorController extends ChangeNotifier {
   DiagramScene? _vertexDragStartSceneSnapshot;
   DiagramPoint? _vertexDragStartPoint;
   DiagramPoint _vertexDragFingerOffset = const DiagramPoint(0.0, 0.0);
+
+  int? _activeControlDragToken;
+  String? _draggingControlPathId;
+  int? _draggingControlSegIndex;
+  int? _draggingControlHandleIndex;
+  DiagramScene? _controlDragStartSceneSnapshot;
+  DiagramPoint? _controlDragStartPoint;
+  DiagramPoint _controlDragFingerOffset = const DiagramPoint(0.0, 0.0);
+
+  int? _activeAnnotationDragToken;
+  String? _draggingAnnotationId;
+  DiagramScene? _annotationDragStartSceneSnapshot;
+  DiagramPoint? _annotationDragStartPoint;
+  DiagramPoint _annotationDragFingerOffset = const DiagramPoint(0.0, 0.0);
 
   int _authoritativeRevision = 0;
 
@@ -126,29 +147,43 @@ class TableEditorController extends ChangeNotifier {
   DiagramScene get savedBaseline => _savedBaseline;
   List<Ball> get balls => _scene.balls;
   List<GuidePath> get paths => _scene.paths;
+  List<DiagramAnnotation> get annotations => _scene.annotations;
   SceneViewSettings get viewSettings => _scene.viewSettings;
   SnapSettings get snapSettings => _snapSettings;
 
   String? get selectedBallId => _selectedBallId;
   String? get selectedPathId => _selectedPathId;
   int? get selectedVertexIndex => _selectedVertexIndex;
+  int? get selectedSegmentIndex => _selectedSegmentIndex;
+  ({int segmentIndex, int handleIndex})? get selectedControlHandle =>
+      _selectedControlHandle;
+  String? get selectedAnnotationId => _selectedAnnotationId;
 
   EditorToolMode get toolMode => _toolMode;
   String get draftOwnerBallId => _draftOwnerBallId;
   PathRole get draftRole => _draftRole;
   bool get draftAnchorStart => _draftAnchorStart;
+  AnnotationType get draftAnnotationType => _draftAnnotationType;
   List<DiagramPoint> get draftPoints =>
       List<DiagramPoint>.unmodifiable(_draftPoints);
 
   bool get isDraggingBall => _activeDragToken != null;
   bool get isDraggingVertex => _activeVertexDragToken != null;
-  bool get isDraggingAny => isDraggingBall || isDraggingVertex;
+  bool get isDraggingControlHandle => _activeControlDragToken != null;
+  bool get isDraggingAnnotation => _activeAnnotationDragToken != null;
+  bool get isDraggingAny =>
+      isDraggingBall ||
+      isDraggingVertex ||
+      isDraggingControlHandle ||
+      isDraggingAnnotation;
   bool get isDrawingWithDraft =>
       _toolMode == EditorToolMode.drawPolyline && _draftPoints.isNotEmpty;
   bool get isEditingLocked => _isLoading || isDraggingAny;
 
   int? get activeDragToken => _activeDragToken;
   int? get activeVertexDragToken => _activeVertexDragToken;
+  int? get activeControlDragToken => _activeControlDragToken;
+  int? get activeAnnotationDragToken => _activeAnnotationDragToken;
   int get authoritativeRevision => _authoritativeRevision;
 
   bool get isLoading => _isLoading;
@@ -184,6 +219,34 @@ class TableEditorController extends ChangeNotifier {
     if (_selectedPathId == null) return null;
     for (final path in _scene.paths) {
       if (path.id == _selectedPathId) return path;
+    }
+    return null;
+  }
+
+  int? get effectiveSelectedSegmentIndex {
+    final path = selectedPath;
+    if (path == null || path.segments.isEmpty) return null;
+    if (_selectedSegmentIndex != null &&
+        _selectedSegmentIndex! >= 0 &&
+        _selectedSegmentIndex! < path.segments.length) {
+      return _selectedSegmentIndex;
+    }
+    if (_selectedControlHandle != null &&
+        _selectedControlHandle!.segmentIndex >= 0 &&
+        _selectedControlHandle!.segmentIndex < path.segments.length) {
+      return _selectedControlHandle!.segmentIndex;
+    }
+    if (_selectedVertexIndex != null) {
+      final candidate = _selectedVertexIndex == 0 ? 0 : _selectedVertexIndex! - 1;
+      return candidate.clamp(0, path.segments.length - 1);
+    }
+    return path.segments.length - 1;
+  }
+
+  DiagramAnnotation? get selectedAnnotation {
+    if (_selectedAnnotationId == null) return null;
+    for (final ann in _scene.annotations) {
+      if (ann.id == _selectedAnnotationId) return ann;
     }
     return null;
   }
@@ -228,6 +291,15 @@ class TableEditorController extends ChangeNotifier {
         }
       }
     }
+    for (final ann in scene.annotations) {
+      final match = RegExp(r'^ann_(\d+)$').firstMatch(ann.id);
+      if (match != null) {
+        final numVal = int.tryParse(match.group(1)!);
+        if (numVal != null && numVal >= _nextAnnotationCounter) {
+          _nextAnnotationCounter = numVal + 1;
+        }
+      }
+    }
   }
 
   void _pushUndoSnapshot(DiagramScene previousScene) {
@@ -252,15 +324,27 @@ class TableEditorController extends ChangeNotifier {
       return false;
     }
     _toolMode = mode;
-    if (mode == EditorToolMode.drawPolyline) {
+    if (mode != EditorToolMode.select) {
       _selectedPathId = null;
       _selectedVertexIndex = null;
-      if (_selectedBallId != null) {
-        _draftOwnerBallId = _selectedBallId!;
-      }
+      _selectedSegmentIndex = null;
+      _selectedControlHandle = null;
+      _selectedAnnotationId = null;
+      _selectedSegmentIndex = null;
+      _selectedControlHandle = null;
+      _selectedAnnotationId = null;
+    }
+    if (mode == EditorToolMode.drawPolyline && _selectedBallId != null) {
+      _draftOwnerBallId = _selectedBallId!;
     }
     _safeNotify();
     return true;
+  }
+
+  void setDraftAnnotationType(AnnotationType type) {
+    if (isEditingLocked) return;
+    _draftAnnotationType = type;
+    _safeNotify();
   }
 
   void updateSnapSettings(SnapSettings settings) {
@@ -276,7 +360,7 @@ class TableEditorController extends ChangeNotifier {
   }
 
   // ---------------------------------------------------------------------------
-  // Chọn bi & chọn đường
+  // Chọn bi, đường & chú thích
   // ---------------------------------------------------------------------------
 
   bool selectBall(String? ballId) {
@@ -285,16 +369,57 @@ class TableEditorController extends ChangeNotifier {
     if (ballId != null) {
       _selectedPathId = null;
       _selectedVertexIndex = null;
+      _selectedSegmentIndex = null;
+      _selectedControlHandle = null;
+      _selectedAnnotationId = null;
+      _selectedSegmentIndex = null;
+      _selectedControlHandle = null;
+      _selectedAnnotationId = null;
       _draftOwnerBallId = ballId;
     }
     _safeNotify();
     return true;
   }
 
-  bool selectPath(String? pathId, {int? vertexIndex}) {
+  bool selectPath(String? pathId, {int? vertexIndex, int? segmentIndex}) {
     if (isEditingLocked) return false;
     _selectedPathId = pathId;
     _selectedVertexIndex = vertexIndex;
+    _selectedSegmentIndex = segmentIndex;
+    _selectedControlHandle = null;
+    if (pathId != null) {
+      _selectedAnnotationId = null;
+    }
+    _safeNotify();
+    return true;
+  }
+
+  bool selectSegment(int? segmentIndex) {
+    if (isEditingLocked || _selectedPathId == null) return false;
+    final path = selectedPath;
+    if (path == null) return false;
+    if (segmentIndex != null &&
+        (segmentIndex < 0 || segmentIndex >= path.segments.length)) {
+      return false;
+    }
+    _selectedSegmentIndex = segmentIndex;
+    _selectedControlHandle = null;
+    _safeNotify();
+    return true;
+  }
+
+  bool selectAnnotation(String? annotationId) {
+    if (isEditingLocked) return false;
+    _selectedAnnotationId = annotationId;
+    if (annotationId != null) {
+      _selectedPathId = null;
+      _selectedVertexIndex = null;
+      _selectedSegmentIndex = null;
+      _selectedControlHandle = null;
+      _selectedAnnotationId = null;
+      _selectedSegmentIndex = null;
+      _selectedControlHandle = null;
+    }
     _safeNotify();
     return true;
   }
@@ -412,6 +537,9 @@ class TableEditorController extends ChangeNotifier {
     _toolMode = EditorToolMode.select;
     _selectedPathId = newPath.id;
     _selectedVertexIndex = points.length - 1;
+    _selectedSegmentIndex = newPath.segments.length - 1;
+    _selectedControlHandle = null;
+    _selectedAnnotationId = null;
     _safeNotify();
     return null;
   }
@@ -429,6 +557,9 @@ class TableEditorController extends ChangeNotifier {
     _selectedBallId = ballId;
     _selectedPathId = null;
     _selectedVertexIndex = null;
+    _selectedSegmentIndex = null;
+    _selectedControlHandle = null;
+    _selectedAnnotationId = null;
     _draftOwnerBallId = ballId;
 
     if (ball.locked) {
@@ -656,24 +787,227 @@ class TableEditorController extends ChangeNotifier {
     _vertexDragFingerOffset = const DiagramPoint(0.0, 0.0);
   }
 
-  bool insertVertexOnSelectedPath({int? segmentIndex}) {
+  // ---------------------------------------------------------------------------
+  // Giao dịch kéo tay nắm Bézier (control1 / control2)
+  // ---------------------------------------------------------------------------
+
+  int? beginControlHandleDrag(
+    String pathId,
+    int segmentIndex,
+    int handleIndex, {
+    DiagramPoint? touchPoint,
+  }) {
+    if (isEditingLocked || isDrawingWithDraft) return null;
+    if (handleIndex != 1 && handleIndex != 2) return null;
+
+    final path = _findPath(pathId);
+    if (path == null ||
+        segmentIndex < 0 ||
+        segmentIndex >= path.segments.length) {
+      return null;
+    }
+    final seg = path.segments[segmentIndex];
+    if (seg.type != SegmentType.cubic) return null;
+    final handlePt = handleIndex == 1 ? seg.control1 : seg.control2;
+    if (handlePt == null) return null;
+
+    _selectedPathId = pathId;
+    _selectedSegmentIndex = segmentIndex;
+    _selectedControlHandle = (segmentIndex: segmentIndex, handleIndex: handleIndex);
+    _selectedVertexIndex = null;
+    _selectedAnnotationId = null;
+
+    final token = _nextDragToken++;
+    _activeControlDragToken = token;
+    _draggingControlPathId = pathId;
+    _draggingControlSegIndex = segmentIndex;
+    _draggingControlHandleIndex = handleIndex;
+    _controlDragStartSceneSnapshot = _scene;
+    _controlDragStartPoint = handlePt;
+    _controlDragFingerOffset = touchPoint != null
+        ? (handlePt - touchPoint)
+        : const DiagramPoint(0.0, 0.0);
+    _safeNotify();
+    return token;
+  }
+
+  void updateControlHandleDragFromTouch(
+    DiagramPoint touchPoint, {
+    int? dragToken,
+  }) {
+    if (!touchPoint.isFinite) return;
+    updateControlHandleDrag(
+      touchPoint + _controlDragFingerOffset,
+      dragToken: dragToken,
+    );
+  }
+
+  void updateControlHandleDrag(DiagramPoint desiredPoint, {int? dragToken}) {
+    if (_isLoading || _activeControlDragToken == null) return;
+    if (dragToken != null && dragToken != _activeControlDragToken) return;
+    if (!desiredPoint.isFinite) return;
+
+    final pathId = _draggingControlPathId;
+    final segIdx = _draggingControlSegIndex;
+    final handleIdx = _draggingControlHandleIndex;
+    if (pathId == null || segIdx == null || handleIdx == null) return;
+
+    final path = _findPath(pathId);
+    if (path == null) return;
+
+    final clamped = PathGeometry.clampHandleToCanvasFrame(desiredPoint);
+    final updatedPath = PathGeometry.updateControlHandle(
+      path,
+      segIdx,
+      handleIdx,
+      clamped,
+    );
+    if (updatedPath == path) return;
+
+    _scene = _scene.withPaths(
+      _scene.paths
+          .map((p) => p.id == pathId ? updatedPath : p)
+          .toList(growable: false),
+    );
+    _safeNotify();
+  }
+
+  bool endControlHandleDrag({
+    int? dragToken,
+    void Function(String warning)? onInvalidPath,
+  }) {
+    if (_activeControlDragToken == null) return false;
+    if (dragToken != null && dragToken != _activeControlDragToken) return false;
+
+    final pathId = _draggingControlPathId;
+    final segIdx = _draggingControlSegIndex;
+    final handleIdx = _draggingControlHandleIndex;
+    final snapshot = _controlDragStartSceneSnapshot;
+    final startPoint = _controlDragStartPoint;
+
+    _clearControlHandleDragState();
+
+    if (pathId != null &&
+        segIdx != null &&
+        handleIdx != null &&
+        snapshot != null &&
+        startPoint != null) {
+      final path = _findPath(pathId);
+      if (path != null && segIdx < path.segments.length) {
+        final seg = path.segments[segIdx];
+        final currentPt = handleIdx == 1 ? seg.control1 : seg.control2;
+        if (currentPt != null && currentPt != startPoint) {
+          _pushUndoSnapshot(snapshot);
+        }
+        final err = PathGeometry.validatePath(
+          path,
+          _scene.balls,
+          width: _scene.width,
+          height: _scene.height,
+        );
+        if (err != null) {
+          onInvalidPath?.call(err);
+        }
+      }
+    }
+    _safeNotify();
+    return true;
+  }
+
+  bool cancelControlHandleDrag({int? dragToken}) {
+    if (_activeControlDragToken == null) return false;
+    if (dragToken != null && dragToken != _activeControlDragToken) return false;
+
+    final snapshot = _controlDragStartSceneSnapshot;
+    _clearControlHandleDragState();
+
+    if (snapshot != null) {
+      _scene = snapshot;
+    }
+    _safeNotify();
+    return true;
+  }
+
+  void _clearControlHandleDragState() {
+    _activeControlDragToken = null;
+    _draggingControlPathId = null;
+    _draggingControlSegIndex = null;
+    _draggingControlHandleIndex = null;
+    _controlDragStartSceneSnapshot = null;
+    _controlDragStartPoint = null;
+    _controlDragFingerOffset = const DiagramPoint(0.0, 0.0);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Chuyển kiểu đoạn thẳng / cubic & thao tác trên đường
+  // ---------------------------------------------------------------------------
+
+  bool convertSegmentToCubic(String pathId, int segmentIndex) {
     if (isEditingLocked || isDrawingWithDraft) return false;
-    final path = selectedPath;
+    final path = _findPath(pathId);
     if (path == null) return false;
-
-    final targetSeg = segmentIndex ??
-        (_selectedVertexIndex != null
-            ? _selectedVertexIndex!.clamp(0, path.segments.length - 1)
-            : path.segments.length - 1);
-
-    final updated = PathGeometry.insertMidpointAtSegment(path, targetSeg);
+    final updated = PathGeometry.convertSegmentToCubic(path, segmentIndex);
     if (updated == path) return false;
 
     _pushUndoSnapshot(_scene);
     _scene = _scene.withPaths(
-      _scene.paths.map((p) => p.id == path.id ? updated : p).toList(),
+      _scene.paths.map((p) => p.id == pathId ? updated : p).toList(growable: false),
+    );
+    _selectedPathId = pathId;
+    _selectedSegmentIndex = segmentIndex;
+    _safeNotify();
+    return true;
+  }
+
+  bool convertSegmentToLine(String pathId, int segmentIndex) {
+    if (isEditingLocked || isDrawingWithDraft) return false;
+    final path = _findPath(pathId);
+    if (path == null) return false;
+    final updated = PathGeometry.convertSegmentToLine(path, segmentIndex);
+    if (updated == path) return false;
+
+    _pushUndoSnapshot(_scene);
+    _scene = _scene.withPaths(
+      _scene.paths.map((p) => p.id == pathId ? updated : p).toList(growable: false),
+    );
+    _selectedPathId = pathId;
+    _selectedSegmentIndex = segmentIndex;
+    _selectedControlHandle = null;
+    _safeNotify();
+    return true;
+  }
+
+  bool toggleSelectedSegmentCurveType() {
+    final path = selectedPath;
+    final segIdx = effectiveSelectedSegmentIndex;
+    if (path == null || segIdx == null) return false;
+    final seg = path.segments[segIdx];
+    if (seg.type == SegmentType.line) {
+      return convertSegmentToCubic(path.id, segIdx);
+    } else if (seg.type == SegmentType.cubic) {
+      return convertSegmentToLine(path.id, segIdx);
+    }
+    return false;
+  }
+
+  bool insertVertexOnSelectedPath({int? segmentIndex, double t = 0.5}) {
+    if (isEditingLocked || isDrawingWithDraft) return false;
+    final path = selectedPath;
+    if (path == null) return false;
+
+    final targetSeg = segmentIndex ?? effectiveSelectedSegmentIndex ?? (path.segments.length - 1);
+
+    final updated =
+        PathGeometry.insertMidpointAtSegment(path, targetSeg, t: t);
+    if (updated == path) return false;
+
+    _pushUndoSnapshot(_scene);
+    _scene = _scene.withPaths(
+      _scene.paths.map((p) => p.id == path.id ? updated : p).toList(growable: false),
     );
     _selectedVertexIndex = targetSeg + 1;
+    _selectedSegmentIndex = targetSeg;
+    _selectedControlHandle = null;
     _safeNotify();
     return true;
   }
@@ -698,13 +1032,22 @@ class TableEditorController extends ChangeNotifier {
       return 'Điểm đầu đang gắn với tâm bi. Hãy gỡ liên kết trước khi xóa điểm đầu.';
     }
 
-    final updated = PathGeometry.removeVertex(path, idx);
+    final res = PathGeometry.tryRemoveVertex(path, idx);
+    if (res.error != null || res.path == null) {
+      return res.error ?? 'Không thể xóa điểm chọn.';
+    }
+
+    final updated = res.path!;
     _pushUndoSnapshot(_scene);
     _scene = _scene.withPaths(
-      _scene.paths.map((p) => p.id == path.id ? updated : p).toList(),
+      _scene.paths.map((p) => p.id == path.id ? updated : p).toList(growable: false),
     );
     final newLen = PathGeometry.extractVertices(updated).length;
     _selectedVertexIndex = idx.clamp(0, newLen - 1);
+    _selectedSegmentIndex = updated.segments.isEmpty
+        ? null
+        : (idx - 1).clamp(0, updated.segments.length - 1);
+    _selectedControlHandle = null;
     _safeNotify();
     return null;
   }
@@ -717,9 +1060,11 @@ class TableEditorController extends ChangeNotifier {
     final updated = PathGeometry.reversePath(path);
     _pushUndoSnapshot(_scene);
     _scene = _scene.withPaths(
-      _scene.paths.map((p) => p.id == path.id ? updated : p).toList(),
+      _scene.paths.map((p) => p.id == path.id ? updated : p).toList(growable: false),
     );
     _selectedVertexIndex = null;
+    _selectedSegmentIndex = null;
+    _selectedControlHandle = null;
     _safeNotify();
     return true;
   }
@@ -736,6 +1081,8 @@ class TableEditorController extends ChangeNotifier {
     );
     _selectedPathId = null;
     _selectedVertexIndex = null;
+    _selectedSegmentIndex = null;
+    _selectedControlHandle = null;
     _safeNotify();
     return true;
   }
@@ -800,6 +1147,292 @@ class TableEditorController extends ChangeNotifier {
     _scene = _scene.withPaths(
       _scene.paths.map((p) => p.id == path.id ? updated : p).toList(),
     );
+    _safeNotify();
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Chú thích (Nhãn chữ, số thứ tự, chấm đánh dấu, vùng tròn, vùng chữ nhật)
+  // ---------------------------------------------------------------------------
+
+  String _defaultAnnotationText(AnnotationType type) {
+    if (type == AnnotationType.label) return 'Nhãn';
+    if (type == AnnotationType.sequence) {
+      final seqCount = _scene.annotations
+          .where((a) => a.type == AnnotationType.sequence)
+          .length;
+      return '${seqCount + 1}';
+    }
+    return '';
+  }
+
+  DiagramAnnotation? addAnnotation({
+    required AnnotationType type,
+    required DiagramPoint position,
+    String? text,
+    double? width,
+    double? height,
+    double? radius,
+    int? colorValue,
+    bool isDashed = false,
+    double strokeWidth = 1.8,
+  }) {
+    if (isEditingLocked || isDrawingWithDraft || !position.isFinite) {
+      return null;
+    }
+    if (strokeWidth.isFinite == false || strokeWidth <= 0) return null;
+
+    final safeWidth = width ?? DiagramAnnotation.defaultWidthFor(type);
+    final safeHeight = height ?? DiagramAnnotation.defaultHeightFor(type);
+    final safeRadius = radius ?? DiagramAnnotation.defaultRadiusFor(type);
+    if (!safeWidth.isFinite ||
+        safeWidth < 0 ||
+        !safeHeight.isFinite ||
+        safeHeight < 0 ||
+        !safeRadius.isFinite ||
+        safeRadius < 0) {
+      return null;
+    }
+    if (type == AnnotationType.rectZone && (safeWidth <= 0 || safeHeight <= 0)) {
+      return null;
+    }
+    if ((type == AnnotationType.circleZone || type == AnnotationType.marker) &&
+        safeRadius <= 0) {
+      return null;
+    }
+
+    final clampedPos = AnnotationGeometry.clampPosition(
+      position,
+      width: _scene.width,
+      height: _scene.height,
+    );
+    final created = DiagramAnnotation(
+      id: 'ann_${_nextAnnotationCounter++}',
+      type: type,
+      position: clampedPos,
+      width: safeWidth,
+      height: safeHeight,
+      radius: safeRadius,
+      text: text ?? _defaultAnnotationText(type),
+      colorValue: colorValue,
+      isDashed: isDashed,
+      strokeWidth: strokeWidth,
+    );
+
+    _pushUndoSnapshot(_scene);
+    _scene = _scene.withAnnotations([..._scene.annotations, created]);
+    _selectedAnnotationId = created.id;
+    _selectedPathId = null;
+    _selectedVertexIndex = null;
+    _selectedSegmentIndex = null;
+    _selectedControlHandle = null;
+    _toolMode = EditorToolMode.select;
+    _safeNotify();
+    return created;
+  }
+
+  int? beginAnnotationDrag(
+    String annotationId, {
+    DiagramPoint? touchPoint,
+    void Function(String message)? onBlocked,
+  }) {
+    if (isEditingLocked || isDrawingWithDraft) return null;
+    final ann = _findAnnotation(annotationId);
+    if (ann == null) return null;
+
+    _selectedAnnotationId = annotationId;
+    _selectedPathId = null;
+    _selectedVertexIndex = null;
+    _selectedSegmentIndex = null;
+    _selectedControlHandle = null;
+
+    if (ann.locked) {
+      onBlocked?.call('Chú thích đang bị khóa. Hãy mở khóa trước khi di chuyển.');
+      _safeNotify();
+      return null;
+    }
+
+    final token = _nextDragToken++;
+    _activeAnnotationDragToken = token;
+    _draggingAnnotationId = annotationId;
+    _annotationDragStartSceneSnapshot = _scene;
+    _annotationDragStartPoint = ann.position;
+    _annotationDragFingerOffset = touchPoint != null
+        ? (ann.position - touchPoint)
+        : const DiagramPoint(0.0, 0.0);
+    _safeNotify();
+    return token;
+  }
+
+  void updateAnnotationDragFromTouch(
+    DiagramPoint touchPoint, {
+    int? dragToken,
+  }) {
+    if (!touchPoint.isFinite) return;
+    updateAnnotationDrag(
+      touchPoint + _annotationDragFingerOffset,
+      dragToken: dragToken,
+    );
+  }
+
+  void updateAnnotationDrag(DiagramPoint desiredPos, {int? dragToken}) {
+    if (_isLoading || _activeAnnotationDragToken == null) return;
+    if (dragToken != null && dragToken != _activeAnnotationDragToken) return;
+    if (!desiredPos.isFinite) return;
+
+    final annId = _draggingAnnotationId;
+    if (annId == null) return;
+    final ann = _findAnnotation(annId);
+    if (ann == null || ann.locked) return;
+
+    final clamped = AnnotationGeometry.clampPosition(
+      desiredPos,
+      width: _scene.width,
+      height: _scene.height,
+    );
+    if (clamped == ann.position) return;
+
+    _scene = _scene.withAnnotations(
+      _scene.annotations
+          .map((a) => a.id == annId ? a.copyWith(position: clamped) : a)
+          .toList(growable: false),
+    );
+    _safeNotify();
+  }
+
+  bool endAnnotationDrag({int? dragToken}) {
+    if (_activeAnnotationDragToken == null) return false;
+    if (dragToken != null && dragToken != _activeAnnotationDragToken) return false;
+
+    final annId = _draggingAnnotationId;
+    final snapshot = _annotationDragStartSceneSnapshot;
+    final startPos = _annotationDragStartPoint;
+
+    _clearAnnotationDragState();
+
+    if (annId != null && snapshot != null && startPos != null) {
+      final current = _findAnnotation(annId);
+      if (current != null && current.position != startPos) {
+        _pushUndoSnapshot(snapshot);
+      }
+    }
+    _safeNotify();
+    return true;
+  }
+
+  bool cancelAnnotationDrag({int? dragToken}) {
+    if (_activeAnnotationDragToken == null) return false;
+    if (dragToken != null && dragToken != _activeAnnotationDragToken) return false;
+
+    final snapshot = _annotationDragStartSceneSnapshot;
+    _clearAnnotationDragState();
+
+    if (snapshot != null) {
+      _scene = snapshot;
+    }
+    _safeNotify();
+    return true;
+  }
+
+  void _clearAnnotationDragState() {
+    _activeAnnotationDragToken = null;
+    _draggingAnnotationId = null;
+    _annotationDragStartSceneSnapshot = null;
+    _annotationDragStartPoint = null;
+    _annotationDragFingerOffset = const DiagramPoint(0.0, 0.0);
+  }
+
+  String? updateSelectedAnnotation({
+    String? text,
+    double? width,
+    double? height,
+    double? radius,
+    int? colorValue,
+    bool clearColor = false,
+    bool? isDashed,
+    double? strokeWidth,
+  }) {
+    if (_isLoading) return 'Đang tải dữ liệu, vui lòng chờ.';
+    if (isDraggingAny || isDrawingWithDraft) {
+      return 'Hãy hoàn tất thao tác hiện tại trước khi sửa chú thích.';
+    }
+    final ann = selectedAnnotation;
+    if (ann == null) return 'Chưa chọn chú thích nào.';
+
+    final nextW = width ?? ann.width;
+    final nextH = height ?? ann.height;
+    final nextR = radius ?? ann.radius;
+    final nextStroke = strokeWidth ?? ann.strokeWidth;
+
+    if (!nextW.isFinite ||
+        nextW < 0 ||
+        !nextH.isFinite ||
+        nextH < 0 ||
+        !nextR.isFinite ||
+        nextR < 0) {
+      return 'Kích thước chú thích phải là số hữu hạn không âm.';
+    }
+    if (ann.type == AnnotationType.rectZone && (nextW <= 0 || nextH <= 0)) {
+      return 'Chiều rộng và chiều cao vùng chữ nhật phải lớn hơn 0.';
+    }
+    if ((ann.type == AnnotationType.circleZone ||
+            ann.type == AnnotationType.marker) &&
+        nextR <= 0) {
+      return 'Bán kính chú thích phải lớn hơn 0.';
+    }
+    if (!nextStroke.isFinite || nextStroke <= 0) {
+      return 'Độ dày nét chú thích phải lớn hơn 0.';
+    }
+
+    final updated = ann.copyWith(
+      text: text,
+      width: nextW,
+      height: nextH,
+      radius: nextR,
+      colorValue: colorValue,
+      clearColor: clearColor,
+      isDashed: isDashed,
+      strokeWidth: nextStroke,
+    );
+    if (updated == ann) return null;
+
+    _pushUndoSnapshot(_scene);
+    _scene = _scene.withAnnotations(
+      _scene.annotations
+          .map((a) => a.id == ann.id ? updated : a)
+          .toList(growable: false),
+    );
+    _safeNotify();
+    return null;
+  }
+
+  bool toggleAnnotationLock(String annotationId) {
+    if (isEditingLocked || isDrawingWithDraft) return false;
+    final ann = _findAnnotation(annotationId);
+    if (ann == null) return false;
+
+    _pushUndoSnapshot(_scene);
+    _scene = _scene.withAnnotations(
+      _scene.annotations
+          .map((a) => a.id == annotationId ? a.copyWith(locked: !a.locked) : a)
+          .toList(growable: false),
+    );
+    _safeNotify();
+    return true;
+  }
+
+  bool deleteSelectedAnnotation() {
+    if (isEditingLocked || isDrawingWithDraft) return false;
+    final annId = _selectedAnnotationId;
+    if (annId == null || _findAnnotation(annId) == null) return false;
+
+    _pushUndoSnapshot(_scene);
+    _scene = _scene.withAnnotations(
+      _scene.annotations
+          .where((a) => a.id != annId)
+          .toList(growable: false),
+    );
+    _selectedAnnotationId = null;
     _safeNotify();
     return true;
   }
@@ -925,10 +1558,7 @@ class TableEditorController extends ChangeNotifier {
     _redoStack.add(_scene);
     final previous = _undoStack.removeLast();
     _scene = previous.copyWith(viewSettings: _scene.viewSettings);
-    if (_selectedPathId != null && _findPath(_selectedPathId!) == null) {
-      _selectedPathId = null;
-      _selectedVertexIndex = null;
-    }
+    _normalizeSelectionAfterSceneSwap();
     _authoritativeRevision++;
     _safeNotify();
     return true;
@@ -939,13 +1569,32 @@ class TableEditorController extends ChangeNotifier {
     _undoStack.add(_scene);
     final next = _redoStack.removeLast();
     _scene = next.copyWith(viewSettings: _scene.viewSettings);
-    if (_selectedPathId != null && _findPath(_selectedPathId!) == null) {
-      _selectedPathId = null;
-      _selectedVertexIndex = null;
-    }
+    _normalizeSelectionAfterSceneSwap();
     _authoritativeRevision++;
     _safeNotify();
     return true;
+  }
+
+  void _normalizeSelectionAfterSceneSwap() {
+    if (_selectedPathId != null) {
+      final found = _findPath(_selectedPathId!);
+      if (found == null) {
+        _selectedPathId = null;
+        _selectedVertexIndex = null;
+        _selectedSegmentIndex = null;
+        _selectedControlHandle = null;
+      } else {
+        if (_selectedSegmentIndex != null &&
+            _selectedSegmentIndex! >= found.segments.length) {
+          _selectedSegmentIndex = found.segments.length - 1;
+        }
+        _selectedControlHandle = null;
+      }
+    }
+    if (_selectedAnnotationId != null &&
+        _findAnnotation(_selectedAnnotationId!) == null) {
+      _selectedAnnotationId = null;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1000,6 +1649,9 @@ class TableEditorController extends ChangeNotifier {
       _draftPoints.clear();
       _selectedPathId = null;
       _selectedVertexIndex = null;
+      _selectedSegmentIndex = null;
+      _selectedControlHandle = null;
+      _selectedAnnotationId = null;
       _authoritativeRevision++;
       _isLoading = false;
       _safeNotify();
@@ -1103,6 +1755,13 @@ class TableEditorController extends ChangeNotifier {
   GuidePath? _findPath(String id) {
     for (final path in _scene.paths) {
       if (path.id == id) return path;
+    }
+    return null;
+  }
+
+  DiagramAnnotation? _findAnnotation(String id) {
+    for (final ann in _scene.annotations) {
+      if (ann.id == id) return ann;
     }
     return null;
   }

@@ -147,30 +147,141 @@ class Ball {
   int get hashCode => Object.hash(id, color, label, center, radius, locked);
 }
 
-/// Đoạn trên đường hướng dẫn (thẳng hoặc Bézier bậc 3).
+Map<String, dynamic> _extractExtraFields(
+  Map<String, dynamic> json,
+  Set<String> knownKeys,
+) {
+  final extra = <String, dynamic>{};
+  for (final entry in json.entries) {
+    if (!knownKeys.contains(entry.key)) {
+      extra[entry.key] = _freezeJsonValue(entry.value);
+    }
+  }
+  return extra.isEmpty ? const {} : Map<String, dynamic>.unmodifiable(extra);
+}
+
+dynamic _freezeJsonValue(dynamic value) {
+  if (value is Map) {
+    return Map<String, dynamic>.unmodifiable({
+      for (final entry in value.entries)
+        entry.key.toString(): _freezeJsonValue(entry.value),
+    });
+  }
+  if (value is List) {
+    return List<dynamic>.unmodifiable(value.map(_freezeJsonValue));
+  }
+  return value;
+}
+
+bool _jsonValueEquals(dynamic a, dynamic b) {
+  if (identical(a, b)) return true;
+  if (a is Map && b is Map) {
+    if (a.length != b.length) return false;
+    for (final entry in a.entries) {
+      if (!b.containsKey(entry.key) ||
+          !_jsonValueEquals(entry.value, b[entry.key])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (a is List && b is List) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!_jsonValueEquals(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  return a == b;
+}
+
+int _jsonValueHash(dynamic value) {
+  if (value is Map) {
+    return Object.hashAllUnordered(
+      value.entries.map((e) => Object.hash(e.key, _jsonValueHash(e.value))),
+    );
+  }
+  if (value is List) {
+    return Object.hashAll(value.map(_jsonValueHash));
+  }
+  return value.hashCode;
+}
+
+/// Đoạn trên đường hướng dẫn (thẳng, Bézier bậc 3 hoặc đoạn mở rộng được bảo toàn).
 class PathSegment {
   final SegmentType type;
   final DiagramPoint start;
   final DiagramPoint end;
   final DiagramPoint? control1; // Dùng cho cubic
   final DiagramPoint? control2; // Dùng cho cubic
+  final String? unknownTypeKey;
+  final Map<String, dynamic> extraFields;
 
   const PathSegment.line({
     required this.start,
     required this.end,
+    this.extraFields = const {},
   })  : type = SegmentType.line,
         control1 = null,
-        control2 = null;
+        control2 = null,
+        unknownTypeKey = null;
 
   const PathSegment.cubic({
     required this.start,
     required this.end,
-    required this.control1,
-    required this.control2,
-  }) : type = SegmentType.cubic;
+    required DiagramPoint this.control1,
+    required DiagramPoint this.control2,
+    this.extraFields = const {},
+  })  : type = SegmentType.cubic,
+        unknownTypeKey = null;
+
+  const PathSegment.unknown({
+    required String rawType,
+    required this.start,
+    required this.end,
+    this.control1,
+    this.control2,
+    this.extraFields = const {},
+  })  : type = SegmentType.unknown,
+        unknownTypeKey = rawType;
+
+  PathSegment copyWith({
+    DiagramPoint? start,
+    DiagramPoint? end,
+    DiagramPoint? control1,
+    DiagramPoint? control2,
+  }) {
+    if (type == SegmentType.cubic) {
+      return PathSegment.cubic(
+        start: start ?? this.start,
+        end: end ?? this.end,
+        control1: control1 ?? this.control1!,
+        control2: control2 ?? this.control2!,
+        extraFields: extraFields,
+      );
+    }
+    if (type == SegmentType.unknown) {
+      return PathSegment.unknown(
+        rawType: unknownTypeKey ?? 'unknown',
+        start: start ?? this.start,
+        end: end ?? this.end,
+        control1: control1 ?? this.control1,
+        control2: control2 ?? this.control2,
+        extraFields: extraFields,
+      );
+    }
+    return PathSegment.line(
+      start: start ?? this.start,
+      end: end ?? this.end,
+      extraFields: extraFields,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
-        'type': type.storageKey,
+        ...extraFields,
+        'type': type == SegmentType.unknown
+            ? (unknownTypeKey ?? 'unknown')
+            : type.storageKey,
         'start': start.toJson(),
         'end': end.toJson(),
         if (control1 != null) 'control1': control1!.toJson(),
@@ -178,21 +289,49 @@ class PathSegment {
       };
 
   factory PathSegment.fromJson(Map<String, dynamic> json) {
-    final type = SegmentType.fromKey(json['type'] as String);
+    final rawType = json['type'];
+    if (rawType is! String || rawType.trim().isEmpty) {
+      throw const FormatException('Kiểu đoạn đường không hợp lệ.');
+    }
+    final type = SegmentType.tryFromKey(rawType);
     final start = DiagramPoint.fromJson(json['start'] as Map<String, dynamic>);
     final end = DiagramPoint.fromJson(json['end'] as Map<String, dynamic>);
+    final extra = _extractExtraFields(
+      json,
+      const {'type', 'start', 'end', 'control1', 'control2'},
+    );
     if (type == SegmentType.line) {
-      return PathSegment.line(start: start, end: end);
-    } else {
+      return PathSegment.line(start: start, end: end, extraFields: extra);
+    }
+    if (type == SegmentType.cubic) {
+      final rawC1 = json['control1'];
+      final rawC2 = json['control2'];
+      if (rawC1 is! Map<String, dynamic> || rawC2 is! Map<String, dynamic>) {
+        throw const FormatException('Đoạn cong Bézier thiếu tay nắm control1/control2.');
+      }
       return PathSegment.cubic(
         start: start,
         end: end,
-        control1:
-            DiagramPoint.fromJson(json['control1'] as Map<String, dynamic>),
-        control2:
-            DiagramPoint.fromJson(json['control2'] as Map<String, dynamic>),
+        control1: DiagramPoint.fromJson(rawC1),
+        control2: DiagramPoint.fromJson(rawC2),
+        extraFields: extra,
       );
     }
+    // Đoạn mở rộng chưa hỗ trợ: bảo toàn nguyên dữ liệu thay vì làm mất khi đọc/lưu
+    final c1 = json['control1'] is Map<String, dynamic>
+        ? DiagramPoint.fromJson(json['control1'] as Map<String, dynamic>)
+        : null;
+    final c2 = json['control2'] is Map<String, dynamic>
+        ? DiagramPoint.fromJson(json['control2'] as Map<String, dynamic>)
+        : null;
+    return PathSegment.unknown(
+      rawType: rawType,
+      start: start,
+      end: end,
+      control1: c1,
+      control2: c2,
+      extraFields: extra,
+    );
   }
 
   @override
@@ -201,13 +340,23 @@ class PathSegment {
       other is PathSegment &&
           runtimeType == other.runtimeType &&
           type == other.type &&
+          unknownTypeKey == other.unknownTypeKey &&
           start == other.start &&
           end == other.end &&
           control1 == other.control1 &&
-          control2 == other.control2;
+          control2 == other.control2 &&
+          _jsonValueEquals(extraFields, other.extraFields);
 
   @override
-  int get hashCode => Object.hash(type, start, end, control1, control2);
+  int get hashCode => Object.hash(
+        type,
+        unknownTypeKey,
+        start,
+        end,
+        control1,
+        control2,
+        _jsonValueHash(extraFields),
+      );
 }
 
 /// Đường hướng dẫn tĩnh cho bi.
@@ -221,6 +370,7 @@ class GuidePath {
   final ArrowMode arrowMode;
   final int? customColorValue;
   final String? startAnchorBallId; // Gắn điểm đầu với tâm bi sở hữu
+  final Map<String, dynamic> extraFields;
 
   GuidePath({
     required this.id,
@@ -232,7 +382,11 @@ class GuidePath {
     this.arrowMode = ArrowMode.end,
     this.customColorValue,
     this.startAnchorBallId,
-  }) : segments = List<PathSegment>.unmodifiable(segments);
+    Map<String, dynamic> extraFields = const {},
+  })  : segments = List<PathSegment>.unmodifiable(segments),
+        extraFields = extraFields.isEmpty
+            ? const {}
+            : Map<String, dynamic>.unmodifiable(extraFields);
 
   GuidePath copyWith({
     String? id,
@@ -260,10 +414,12 @@ class GuidePath {
       startAnchorBallId: clearStartAnchor
           ? null
           : (startAnchorBallId ?? this.startAnchorBallId),
+      extraFields: extraFields,
     );
   }
 
   Map<String, dynamic> toJson() => {
+        ...extraFields,
         'id': id,
         'ownerBallId': ownerBallId,
         'role': role.storageKey,
@@ -310,6 +466,20 @@ class GuidePath {
       arrowMode: ArrowMode.fromKey(json['arrowMode'] as String? ?? 'end'),
       customColorValue: (json['customColorValue'] as num?)?.toInt(),
       startAnchorBallId: json['startAnchorBallId'] as String?,
+      extraFields: _extractExtraFields(
+        json,
+        const {
+          'id',
+          'ownerBallId',
+          'role',
+          'segments',
+          'isDashed',
+          'strokeWidth',
+          'arrowMode',
+          'customColorValue',
+          'startAnchorBallId',
+        },
+      ),
     );
   }
 
@@ -325,7 +495,8 @@ class GuidePath {
         arrowMode != other.arrowMode ||
         customColorValue != other.customColorValue ||
         startAnchorBallId != other.startAnchorBallId ||
-        segments.length != other.segments.length) {
+        segments.length != other.segments.length ||
+        !_jsonValueEquals(extraFields, other.extraFields)) {
       return false;
     }
     for (var i = 0; i < segments.length; i++) {
@@ -345,45 +516,189 @@ class GuidePath {
         customColorValue,
         startAnchorBallId,
         Object.hashAll(segments),
+        _jsonValueHash(extraFields),
       );
 }
 
-/// Chú thích trên sơ đồ.
+/// Chú thích tĩnh trên sơ đồ (nhãn chữ, số thứ tự, chấm đánh dấu, vùng tròn, vùng chữ nhật).
 class DiagramAnnotation {
   final String id;
   final AnnotationType type;
+  final String? unknownTypeKey;
   final DiagramPoint position;
+  final double width; // Kích thước ngang (chủ yếu cho vùng chữ nhật, đơn vị bàn)
+  final double height; // Kích thước dọc (chủ yếu cho vùng chữ nhật, đơn vị bàn)
+  final double radius; // Bán kính (chủ yếu cho vùng tròn và chấm đánh dấu, đơn vị bàn)
   final String text;
   final int? colorValue;
+  final bool isDashed;
+  final double strokeWidth;
   final bool locked;
+  final Map<String, dynamic> extraFields;
 
-  const DiagramAnnotation({
+  static double defaultWidthFor(AnnotationType type) =>
+      type == AnnotationType.rectZone ? 28.0 : 0.0;
+
+  static double defaultHeightFor(AnnotationType type) =>
+      type == AnnotationType.rectZone ? 20.0 : 0.0;
+
+  static double defaultRadiusFor(AnnotationType type) {
+    switch (type) {
+      case AnnotationType.circleZone:
+        return 14.0;
+      case AnnotationType.marker:
+        return 2.6;
+      case AnnotationType.sequence:
+        return 5.5;
+      case AnnotationType.label:
+      case AnnotationType.rectZone:
+        return 0.0;
+    }
+  }
+
+  DiagramAnnotation({
     required this.id,
     required this.type,
+    this.unknownTypeKey,
     required this.position,
+    double? width,
+    double? height,
+    double? radius,
     this.text = '',
     this.colorValue,
+    this.isDashed = false,
+    this.strokeWidth = 1.8,
     this.locked = false,
-  });
+    Map<String, dynamic> extraFields = const {},
+  })  : width = width ?? defaultWidthFor(type),
+        height = height ?? defaultHeightFor(type),
+        radius = radius ?? defaultRadiusFor(type),
+        extraFields = extraFields.isEmpty
+            ? const {}
+            : Map<String, dynamic>.unmodifiable(extraFields);
+
+  DiagramAnnotation copyWith({
+    String? id,
+    AnnotationType? type,
+    DiagramPoint? position,
+    double? width,
+    double? height,
+    double? radius,
+    String? text,
+    int? colorValue,
+    bool clearColor = false,
+    bool? isDashed,
+    double? strokeWidth,
+    bool? locked,
+  }) {
+    return DiagramAnnotation(
+      id: id ?? this.id,
+      type: type ?? this.type,
+      unknownTypeKey: unknownTypeKey,
+      position: position ?? this.position,
+      width: width ?? this.width,
+      height: height ?? this.height,
+      radius: radius ?? this.radius,
+      text: text ?? this.text,
+      colorValue: clearColor ? null : (colorValue ?? this.colorValue),
+      isDashed: isDashed ?? this.isDashed,
+      strokeWidth: strokeWidth ?? this.strokeWidth,
+      locked: locked ?? this.locked,
+      extraFields: extraFields,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
+        ...extraFields,
         'id': id,
-        'type': type.storageKey,
+        'type': unknownTypeKey ?? type.storageKey,
         'position': position.toJson(),
+        'width': width,
+        'height': height,
+        'radius': radius,
         'text': text,
         if (colorValue != null) 'colorValue': colorValue,
+        'isDashed': isDashed,
+        'strokeWidth': strokeWidth,
         'locked': locked,
       };
 
   factory DiagramAnnotation.fromJson(Map<String, dynamic> json) {
+    final id = json['id'];
+    if (id is! String || id.trim().isEmpty) {
+      throw const FormatException('ID chú thích không hợp lệ.');
+    }
+    final rawType = json['type'];
+    if (rawType is! String || rawType.trim().isEmpty) {
+      throw const FormatException('Kiểu chú thích không hợp lệ.');
+    }
+    final knownType = AnnotationType.values.cast<AnnotationType?>().firstWhere(
+          (e) => e!.storageKey == rawType,
+          orElse: () => null,
+        );
+    final type = knownType ?? AnnotationType.label;
+
+    final posJson = json['position'];
+    if (posJson is! Map<String, dynamic>) {
+      throw const FormatException('Thiếu tọa độ chú thích.');
+    }
+
+    double parseDim(dynamic raw, double fallback, String fieldName) {
+      if (raw == null) return fallback;
+      if (raw is! num) {
+        throw FormatException('Giá trị $fieldName của chú thích phải là số.');
+      }
+      final val = raw.toDouble();
+      if (!val.isFinite || val < 0) {
+        throw FormatException('Giá trị $fieldName của chú thích không hợp lệ.');
+      }
+      return val;
+    }
+
+    final width = parseDim(json['width'], defaultWidthFor(type), 'width');
+    final height = parseDim(json['height'], defaultHeightFor(type), 'height');
+    final radius = parseDim(json['radius'], defaultRadiusFor(type), 'radius');
+    final rawStroke = json['strokeWidth'];
+    final strokeWidth = rawStroke == null
+        ? 1.8
+        : (rawStroke is num
+            ? rawStroke.toDouble()
+            : throw const FormatException('Độ dày nét chú thích phải là số.'));
+    if (!strokeWidth.isFinite || strokeWidth <= 0) {
+      throw const FormatException(
+        'Độ dày nét chú thích phải hữu hạn và lớn hơn 0.',
+      );
+    }
+
     return DiagramAnnotation(
-      id: json['id'] as String,
-      type: AnnotationType.fromKey(json['type'] as String),
-      position:
-          DiagramPoint.fromJson(json['position'] as Map<String, dynamic>),
+      id: id,
+      type: type,
+      unknownTypeKey: knownType == null ? rawType : null,
+      position: DiagramPoint.fromJson(posJson),
+      width: width,
+      height: height,
+      radius: radius,
       text: (json['text'] as String?) ?? '',
-      colorValue: json['colorValue'] as int?,
+      colorValue: (json['colorValue'] as num?)?.toInt(),
+      isDashed: (json['isDashed'] as bool?) ?? false,
+      strokeWidth: strokeWidth,
       locked: (json['locked'] as bool?) ?? false,
+      extraFields: _extractExtraFields(
+        json,
+        const {
+          'id',
+          'type',
+          'position',
+          'width',
+          'height',
+          'radius',
+          'text',
+          'colorValue',
+          'isDashed',
+          'strokeWidth',
+          'locked',
+        },
+      ),
     );
   }
 
@@ -394,14 +709,34 @@ class DiagramAnnotation {
           runtimeType == other.runtimeType &&
           id == other.id &&
           type == other.type &&
+          unknownTypeKey == other.unknownTypeKey &&
           position == other.position &&
+          width == other.width &&
+          height == other.height &&
+          radius == other.radius &&
           text == other.text &&
           colorValue == other.colorValue &&
-          locked == other.locked;
+          isDashed == other.isDashed &&
+          strokeWidth == other.strokeWidth &&
+          locked == other.locked &&
+          _jsonValueEquals(extraFields, other.extraFields);
 
   @override
-  int get hashCode =>
-      Object.hash(id, type, position, text, colorValue, locked);
+  int get hashCode => Object.hash(
+        id,
+        type,
+        unknownTypeKey,
+        position,
+        width,
+        height,
+        radius,
+        text,
+        colorValue,
+        isDashed,
+        strokeWidth,
+        locked,
+        _jsonValueHash(extraFields),
+      );
 }
 
 /// Ngoại lệ khi đọc hoặc ghi đè dữ liệu có schema mới hơn phiên bản ứng dụng hiện tại.
@@ -555,6 +890,7 @@ class DiagramScene {
   final List<GuidePath> paths;
   final List<DiagramAnnotation> annotations;
   final SceneViewSettings viewSettings;
+  final Map<String, dynamic> extraFields;
 
   DiagramScene({
     required this.id,
@@ -565,9 +901,13 @@ class DiagramScene {
     List<GuidePath> paths = const [],
     List<DiagramAnnotation> annotations = const [],
     this.viewSettings = const SceneViewSettings.defaults(),
+    Map<String, dynamic> extraFields = const {},
   })  : balls = List<Ball>.unmodifiable(balls),
         paths = List<GuidePath>.unmodifiable(paths),
-        annotations = List<DiagramAnnotation>.unmodifiable(annotations);
+        annotations = List<DiagramAnnotation>.unmodifiable(annotations),
+        extraFields = extraFields.isEmpty
+            ? const {}
+            : Map<String, dynamic>.unmodifiable(extraFields);
 
   DiagramScene copyWith({
     String? id,
@@ -588,6 +928,7 @@ class DiagramScene {
       paths: paths ?? this.paths,
       annotations: annotations ?? this.annotations,
       viewSettings: viewSettings ?? this.viewSettings,
+      extraFields: extraFields,
     );
   }
 
@@ -596,6 +937,10 @@ class DiagramScene {
 
   /// Tạo bản scene mới với danh sách đường hướng dẫn mới.
   DiagramScene withPaths(List<GuidePath> newPaths) => copyWith(paths: newPaths);
+
+  /// Tạo bản scene mới với danh sách chú thích mới.
+  DiagramScene withAnnotations(List<DiagramAnnotation> newAnnotations) =>
+      copyWith(annotations: newAnnotations);
 
   /// Tạo bản scene mới với cả danh sách bi và đường hướng dẫn mới.
   DiagramScene withBallsAndPaths({
@@ -715,12 +1060,54 @@ class DiagramScene {
         if (!seg.start.isFinite || !seg.end.isFinite) {
           return 'Đường ${path.id} chứa tọa độ không hữu hạn.';
         }
+        if (seg.type == SegmentType.cubic &&
+            (seg.control1 == null ||
+                seg.control2 == null ||
+                !seg.control1!.isFinite ||
+                !seg.control2!.isFinite)) {
+          return 'Đoạn cong của đường ${path.id} thiếu hoặc có tay nắm không hữu hạn.';
+        }
+      }
+    }
+
+    final seenAnnIds = <String>{};
+    for (final ann in annotations) {
+      if (ann.id.trim().isEmpty) {
+        return 'ID chú thích không được để trống.';
+      }
+      if (!seenAnnIds.add(ann.id)) {
+        return 'Phát hiện ID chú thích bị trùng: ${ann.id}.';
+      }
+      if (!ann.position.isFinite) {
+        return 'Tọa độ chú thích ${ann.id} không hữu hạn.';
+      }
+      if (!ann.width.isFinite ||
+          ann.width < 0 ||
+          !ann.height.isFinite ||
+          ann.height < 0 ||
+          !ann.radius.isFinite ||
+          ann.radius < 0) {
+        return 'Kích thước chú thích ${ann.id} không hợp lệ.';
+      }
+      if (!ann.strokeWidth.isFinite || ann.strokeWidth <= 0) {
+        return 'Độ dày nét chú thích ${ann.id} phải hữu hạn và lớn hơn 0.';
+      }
+      if (ann.type == AnnotationType.circleZone && ann.radius <= 0) {
+        return 'Vùng tròn ${ann.id} phải có bán kính lớn hơn 0.';
+      }
+      if (ann.type == AnnotationType.marker && ann.radius <= 0) {
+        return 'Chấm đánh dấu ${ann.id} phải có bán kính lớn hơn 0.';
+      }
+      if (ann.type == AnnotationType.rectZone &&
+          (ann.width <= 0 || ann.height <= 0)) {
+        return 'Vùng chữ nhật ${ann.id} phải có kích thước rộng và cao lớn hơn 0.';
       }
     }
     return null;
   }
 
   Map<String, dynamic> toJson() => {
+        ...extraFields,
         'id': id,
         'version': version,
         'width': width,
@@ -788,6 +1175,19 @@ class DiagramScene {
               json['viewSettings'] as Map<String, dynamic>,
             )
           : const SceneViewSettings.defaults(),
+      extraFields: _extractExtraFields(
+        json,
+        const {
+          'id',
+          'version',
+          'width',
+          'height',
+          'balls',
+          'paths',
+          'annotations',
+          'viewSettings',
+        },
+      ),
     );
 
     final validationError = scene.validateScene();
@@ -808,7 +1208,8 @@ class DiagramScene {
         viewSettings != other.viewSettings ||
         balls.length != other.balls.length ||
         paths.length != other.paths.length ||
-        annotations.length != other.annotations.length) {
+        annotations.length != other.annotations.length ||
+        !_jsonValueEquals(extraFields, other.extraFields)) {
       return false;
     }
     for (var i = 0; i < balls.length; i++) {
@@ -833,5 +1234,6 @@ class DiagramScene {
         Object.hashAll(balls),
         Object.hashAll(paths),
         Object.hashAll(annotations),
+        _jsonValueHash(extraFields),
       );
 }

@@ -77,17 +77,25 @@ enum BallColor {
 
 enum SegmentType {
   line('line'),
-  cubic('cubic');
+  cubic('cubic'),
+  unknown('unknown');
 
   const SegmentType(this.storageKey);
 
   final String storageKey;
 
+  static SegmentType? tryFromKey(String key) {
+    for (final value in SegmentType.values) {
+      if (value != SegmentType.unknown && value.storageKey == key) {
+        return value;
+      }
+    }
+    return null;
+  }
+
   static SegmentType fromKey(String key) {
-    return SegmentType.values.firstWhere(
-      (e) => e.storageKey == key,
-      orElse: () => throw FormatException('Kiểu đoạn đường không hợp lệ: $key'),
-    );
+    return tryFromKey(key) ??
+        (throw FormatException('Kiểu đoạn đường không hợp lệ: $key'));
   }
 }
 
@@ -126,15 +134,16 @@ enum ArrowMode {
 }
 
 enum AnnotationType {
-  label('label'),
-  sequence('sequence'),
-  marker('marker'),
-  circleZone('circle_zone'),
-  rectZone('rect_zone');
+  label('label', 'Nhãn chữ'),
+  sequence('sequence', 'Số thứ tự'),
+  marker('marker', 'Chấm mốc'),
+  circleZone('circle_zone', 'Vùng tròn'),
+  rectZone('rect_zone', 'Vùng chữ nhật');
 
-  const AnnotationType(this.storageKey);
+  const AnnotationType(this.storageKey, this.displayName);
 
   final String storageKey;
+  final String displayName;
 
   static AnnotationType fromKey(String key) {
     return AnnotationType.values.firstWhere(

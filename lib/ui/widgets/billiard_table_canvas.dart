@@ -2,23 +2,28 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../geometry/annotation_geometry.dart';
 import '../../geometry/path_geometry.dart';
 import '../../geometry/table_constants.dart';
 import '../../geometry/table_geometry.dart';
 import '../../models/models.dart';
 import '../../state/table_editor_controller.dart';
 
-enum _ActiveDragKind { ball, vertex }
+enum _ActiveDragKind { ball, vertex, controlHandle, annotation }
 
 /// Bàn vẽ vector tĩnh theo mẫu TikZ (lòng bàn 188 x 376, khung -20..208 x -20..396):
-/// - Chế độ Chọn / Di chuyển: kéo bi, chọn đường, kéo điểm điều khiển của đường đang chọn.
+/// - Chế độ Chọn / Di chuyển: kéo bi, chọn đường, kéo điểm nối, kéo tay nắm Bézier, kéo chú thích.
 /// - Chế độ Vẽ đường: chạm đặt điểm gấp khúc với nét xem trước; không kéo nhầm bi.
+/// - Chế độ Chú thích: chạm đặt nhãn, số thứ tự, chấm mốc hoặc vùng.
 class BilliardTableCanvas extends StatefulWidget {
   final DiagramScene scene;
   final EditorToolMode toolMode;
   final String? selectedBallId;
   final String? selectedPathId;
   final int? selectedVertexIndex;
+  final int? selectedSegmentIndex;
+  final ({int segmentIndex, int handleIndex})? selectedControlHandle;
+  final String? selectedAnnotationId;
   final Set<String> invalidPathIds;
 
   final List<DiagramPoint> draftPoints;
@@ -27,7 +32,7 @@ class BilliardTableCanvas extends StatefulWidget {
   final SnapSettings snapSettings;
 
   final ValueChanged<String> onBallTapped;
-  final ValueChanged<String?> onPathTapped;
+  final void Function(String? pathId, {int? segmentIndex}) onPathTapped;
 
   final int? Function(String ballId, DiagramPoint touchPoint) onBallDragStart;
   final void Function(DiagramPoint touchPoint, int dragToken)
@@ -43,6 +48,27 @@ class BilliardTableCanvas extends StatefulWidget {
   final ValueChanged<int> onVertexDragEnd;
   final ValueChanged<int> onVertexDragCancel;
 
+  final int? Function(
+    String pathId,
+    int segmentIndex,
+    int handleIndex,
+    DiagramPoint touchPoint,
+  )? onControlHandleDragStart;
+  final void Function(DiagramPoint touchPoint, int dragToken)?
+      onControlHandleDragUpdateFromTouch;
+  final ValueChanged<int>? onControlHandleDragEnd;
+  final ValueChanged<int>? onControlHandleDragCancel;
+
+  final ValueChanged<String?>? onAnnotationTapped;
+  final int? Function(String annotationId, DiagramPoint touchPoint)?
+      onAnnotationDragStart;
+  final void Function(DiagramPoint touchPoint, int dragToken)?
+      onAnnotationDragUpdateFromTouch;
+  final ValueChanged<int>? onAnnotationDragEnd;
+  final ValueChanged<int>? onAnnotationDragCancel;
+  final ValueChanged<DiagramAnnotation>? onLockedAnnotationTouched;
+  final ValueChanged<DiagramPoint>? onAnnotationPlaceTapped;
+
   final ValueChanged<DiagramPoint> onDrawPointPlaced;
 
   const BilliardTableCanvas({
@@ -52,6 +78,9 @@ class BilliardTableCanvas extends StatefulWidget {
     required this.selectedBallId,
     required this.selectedPathId,
     required this.selectedVertexIndex,
+    this.selectedSegmentIndex,
+    this.selectedControlHandle,
+    this.selectedAnnotationId,
     required this.invalidPathIds,
     required this.draftPoints,
     required this.draftOwnerBallId,
@@ -68,6 +97,17 @@ class BilliardTableCanvas extends StatefulWidget {
     required this.onVertexDragUpdateFromTouch,
     required this.onVertexDragEnd,
     required this.onVertexDragCancel,
+    this.onControlHandleDragStart,
+    this.onControlHandleDragUpdateFromTouch,
+    this.onControlHandleDragEnd,
+    this.onControlHandleDragCancel,
+    this.onAnnotationTapped,
+    this.onAnnotationDragStart,
+    this.onAnnotationDragUpdateFromTouch,
+    this.onAnnotationDragEnd,
+    this.onAnnotationDragCancel,
+    this.onLockedAnnotationTouched,
+    this.onAnnotationPlaceTapped,
     required this.onDrawPointPlaced,
   });
 
@@ -128,10 +168,15 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
     _activeDragToken = null;
     _activeDragKind = null;
     if (token != null && kind != null) {
-      if (kind == _ActiveDragKind.ball) {
-        widget.onBallDragCancel(token);
-      } else {
-        widget.onVertexDragCancel(token);
+      switch (kind) {
+        case _ActiveDragKind.ball:
+          widget.onBallDragCancel(token);
+        case _ActiveDragKind.vertex:
+          widget.onVertexDragCancel(token);
+        case _ActiveDragKind.controlHandle:
+          widget.onControlHandleDragCancel?.call(token);
+        case _ActiveDragKind.annotation:
+          widget.onAnnotationDragCancel?.call(token);
       }
     }
   }
@@ -159,20 +204,49 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
               return;
             }
 
+            if (widget.toolMode == EditorToolMode.placeAnnotation) {
+              final raw = mapper.screenToDiagram(event.localPosition);
+              widget.onAnnotationPlaceTapped?.call(raw);
+              return;
+            }
+
             // Chế độ Chọn / Di chuyển
             if (_activePointerId != null) {
               _cancelCurrentSelectDrag();
               return;
             }
 
-            // 1. Ưu tiên kiểm tra điểm điều khiển của đường đang chọn
+            // 1. Ưu tiên kiểm tra tay nắm Bézier & điểm nối của đường đang chọn
             final currentSelectedPath = _selectedPath;
             if (currentSelectedPath != null) {
+              final controlHit = PathGeometry.hitTestControlHandle(
+                screenPosition: event.localPosition,
+                path: currentSelectedPath,
+                mapper: mapper,
+              );
               final vertexHit = PathGeometry.hitTestPathVertex(
                 screenPosition: event.localPosition,
                 path: currentSelectedPath,
                 mapper: mapper,
               );
+              final preferControl = controlHit != null &&
+                  (vertexHit == null ||
+                      controlHit.distancePx < vertexHit.distancePx);
+              if (preferControl && widget.onControlHandleDragStart != null) {
+                final touchDiagram = mapper.screenToDiagram(event.localPosition);
+                final token = widget.onControlHandleDragStart!(
+                  currentSelectedPath.id,
+                  controlHit.segmentIndex,
+                  controlHit.handleIndex,
+                  touchDiagram,
+                );
+                if (token != null) {
+                  _activePointerId = event.pointer;
+                  _activeDragToken = token;
+                  _activeDragKind = _ActiveDragKind.controlHandle;
+                }
+                return;
+              }
               if (vertexHit != null) {
                 final touchDiagram = mapper.screenToDiagram(event.localPosition);
                 final token = widget.onVertexDragStart(
@@ -210,7 +284,20 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
               return;
             }
 
-            // 3. Kiểm tra chạm thân đường (chọn đường gần nhất)
+            // 3. Kiểm tra chạm chú thích nổi (nhãn, số thứ tự, chấm mốc)
+            final fgAnnHit = AnnotationGeometry.hitTestAnnotation(
+              screenPosition: event.localPosition,
+              annotations: widget.scene.annotations,
+              mapper: mapper,
+              preferredAnnotationId: widget.selectedAnnotationId,
+              foregroundOnly: true,
+            );
+            if (fgAnnHit != null) {
+              _handleAnnotationHit(fgAnnHit.annotation, event, mapper);
+              return;
+            }
+
+            // 4. Kiểm tra chạm thân đường (theo đường cong thực)
             final pathHit = PathGeometry.hitTestPath(
               screenPosition: event.localPosition,
               paths: widget.scene.paths,
@@ -218,13 +305,32 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
               preferredPathId: widget.selectedPathId,
             );
             if (pathHit != null) {
-              widget.onPathTapped(pathHit.path.id);
+              widget.onPathTapped(
+                pathHit.path.id,
+                segmentIndex: pathHit.segmentIndex,
+              );
               return;
             }
 
-            // 4. Chạm vùng trống -> bỏ chọn đường hiện tại (giữ bi chọn để xem X/Y)
+            // 5. Kiểm tra chạm chú thích vùng (vùng tròn / vùng chữ nhật)
+            final zoneHit = AnnotationGeometry.hitTestAnnotation(
+              screenPosition: event.localPosition,
+              annotations: widget.scene.annotations,
+              mapper: mapper,
+              preferredAnnotationId: widget.selectedAnnotationId,
+              zonesOnly: true,
+            );
+            if (zoneHit != null) {
+              _handleAnnotationHit(zoneHit.annotation, event, mapper);
+              return;
+            }
+
+            // 6. Chạm vùng trống -> bỏ chọn đường & chú thích hiện tại
             if (widget.selectedPathId != null) {
               widget.onPathTapped(null);
+            }
+            if (widget.selectedAnnotationId != null) {
+              widget.onAnnotationTapped?.call(null);
             }
           },
           onPointerMove: (event) {
@@ -245,10 +351,17 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
               return;
             }
             final touchDiagram = mapper.screenToDiagram(event.localPosition);
-            if (kind == _ActiveDragKind.ball) {
-              widget.onBallDragUpdateFromTouch(touchDiagram, token);
-            } else {
-              widget.onVertexDragUpdateFromTouch(touchDiagram, token);
+            switch (kind) {
+              case _ActiveDragKind.ball:
+                widget.onBallDragUpdateFromTouch(touchDiagram, token);
+              case _ActiveDragKind.vertex:
+                widget.onVertexDragUpdateFromTouch(touchDiagram, token);
+              case _ActiveDragKind.controlHandle:
+                widget.onControlHandleDragUpdateFromTouch
+                    ?.call(touchDiagram, token);
+              case _ActiveDragKind.annotation:
+                widget.onAnnotationDragUpdateFromTouch
+                    ?.call(touchDiagram, token);
             }
           },
           onPointerUp: (event) {
@@ -270,10 +383,15 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
             _activeDragToken = null;
             _activeDragKind = null;
             if (token != null && kind != null) {
-              if (kind == _ActiveDragKind.ball) {
-                widget.onBallDragEnd(token);
-              } else {
-                widget.onVertexDragEnd(token);
+              switch (kind) {
+                case _ActiveDragKind.ball:
+                  widget.onBallDragEnd(token);
+                case _ActiveDragKind.vertex:
+                  widget.onVertexDragEnd(token);
+                case _ActiveDragKind.controlHandle:
+                  widget.onControlHandleDragEnd?.call(token);
+                case _ActiveDragKind.annotation:
+                  widget.onAnnotationDragEnd?.call(token);
               }
             }
           },
@@ -299,6 +417,9 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
               selectedBallId: widget.selectedBallId,
               selectedPathId: widget.selectedPathId,
               selectedVertexIndex: widget.selectedVertexIndex,
+              selectedSegmentIndex: widget.selectedSegmentIndex,
+              selectedControlHandle: widget.selectedControlHandle,
+              selectedAnnotationId: widget.selectedAnnotationId,
               invalidPathIds: widget.invalidPathIds,
               draftPoints: widget.draftPoints,
               draftOwnerBallId: widget.draftOwnerBallId,
@@ -309,6 +430,27 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
       },
     );
   }
+
+  void _handleAnnotationHit(
+    DiagramAnnotation ann,
+    PointerDownEvent event,
+    TableCoordinateMapper mapper,
+  ) {
+    widget.onAnnotationTapped?.call(ann.id);
+    if (widget.onAnnotationDragStart != null) {
+      final touchDiagram = mapper.screenToDiagram(event.localPosition);
+      final token = widget.onAnnotationDragStart!(ann.id, touchDiagram);
+      if (token != null) {
+        _activePointerId = event.pointer;
+        _activeDragToken = token;
+        _activeDragKind = _ActiveDragKind.annotation;
+      } else if (ann.locked) {
+        widget.onLockedAnnotationTouched?.call(ann);
+      }
+    } else if (ann.locked) {
+      widget.onLockedAnnotationTouched?.call(ann);
+    }
+  }
 }
 
 class _BilliardTablePainter extends CustomPainter {
@@ -318,6 +460,9 @@ class _BilliardTablePainter extends CustomPainter {
   final String? selectedBallId;
   final String? selectedPathId;
   final int? selectedVertexIndex;
+  final int? selectedSegmentIndex;
+  final ({int segmentIndex, int handleIndex})? selectedControlHandle;
+  final String? selectedAnnotationId;
   final Set<String> invalidPathIds;
   final List<DiagramPoint> draftPoints;
   final String draftOwnerBallId;
@@ -330,6 +475,9 @@ class _BilliardTablePainter extends CustomPainter {
     required this.selectedBallId,
     required this.selectedPathId,
     required this.selectedVertexIndex,
+    required this.selectedSegmentIndex,
+    required this.selectedControlHandle,
+    required this.selectedAnnotationId,
     required this.invalidPathIds,
     required this.draftPoints,
     required this.draftOwnerBallId,
@@ -436,7 +584,14 @@ class _BilliardTablePainter extends CustomPainter {
       _paintDiamondsAndNumbers(canvas, s, view);
     }
 
-    // 6. Vẽ các đường hướng dẫn DƯỚI lớp bi
+    // 5b. Chú thích dạng vùng (vùng tròn, vùng chữ nhật) nằm dưới lớp đường & bi
+    for (final ann in scene.annotations) {
+      if (AnnotationGeometry.isZoneType(ann.type)) {
+        _paintAnnotation(canvas, ann, s);
+      }
+    }
+
+    // 6. Vẽ các đường hướng dẫn DƯỚI lớp bi (hỗ trợ cả đoạn thẳng và Bézier bậc ba)
     for (final path in scene.paths) {
       _paintGuidePath(canvas, path);
     }
@@ -452,7 +607,14 @@ class _BilliardTablePainter extends CustomPainter {
       _paintBall(canvas, ball, s, view.showBallNumbers);
     }
 
-    // 9. Tay nắm điểm điều khiển chỉ hiện khi đang chọn đường trong chế độ chỉnh sửa
+    // 8b. Chú thích nổi (chấm mốc, số thứ tự, nhãn chữ) trên lớp đường và bi
+    for (final ann in scene.annotations) {
+      if (!AnnotationGeometry.isZoneType(ann.type)) {
+        _paintAnnotation(canvas, ann, s);
+      }
+    }
+
+    // 9. Tay nắm điểm nối & tay nắm Bézier chỉ hiện khi chỉnh đường đang chọn
     if (toolMode == EditorToolMode.select && selectedPathId != null) {
       for (final path in scene.paths) {
         if (path.id == selectedPathId) {
@@ -475,26 +637,41 @@ class _BilliardTablePainter extends CustomPainter {
     return Colors.white;
   }
 
+  Path _buildScreenPath(GuidePath path) {
+    final screenPath = Path();
+    if (path.segments.isEmpty) return screenPath;
+    final first = mapper.diagramToScreen(path.segments.first.start);
+    screenPath.moveTo(first.dx, first.dy);
+    for (final seg in path.segments) {
+      final endPt = mapper.diagramToScreen(seg.end);
+      if (seg.type == SegmentType.cubic &&
+          seg.control1 != null &&
+          seg.control2 != null) {
+        final c1 = mapper.diagramToScreen(seg.control1!);
+        final c2 = mapper.diagramToScreen(seg.control2!);
+        screenPath.cubicTo(c1.dx, c1.dy, c2.dx, c2.dy, endPt.dx, endPt.dy);
+      } else {
+        screenPath.lineTo(endPt.dx, endPt.dy);
+      }
+    }
+    return screenPath;
+  }
+
   void _paintGuidePath(Canvas canvas, GuidePath path) {
     final isSelected = path.id == selectedPathId;
     final isInvalid = invalidPathIds.contains(path.id);
     final baseColor = _resolvePathColor(path);
     final strokeWidth = path.strokeWidth;
+    final screenPath = _buildScreenPath(path);
 
     if (isInvalid) {
       final warnPaint = Paint()
-        ..color = Colors.orangeAccent.withValues(alpha: 0.75)
+        ..color = Colors.orangeAccent.withValues(alpha: 0.78)
         ..style = PaintingStyle.stroke
         ..strokeWidth = strokeWidth + 4.5
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round;
-      for (final seg in path.segments) {
-        canvas.drawLine(
-          mapper.diagramToScreen(seg.start),
-          mapper.diagramToScreen(seg.end),
-          warnPaint,
-        );
-      }
+      canvas.drawPath(screenPath, warnPaint);
     } else if (isSelected) {
       final haloPaint = Paint()
         ..color = const Color(0xFF80D8FF).withValues(alpha: 0.55)
@@ -502,13 +679,7 @@ class _BilliardTablePainter extends CustomPainter {
         ..strokeWidth = strokeWidth + 4.0
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round;
-      for (final seg in path.segments) {
-        canvas.drawLine(
-          mapper.diagramToScreen(seg.start),
-          mapper.diagramToScreen(seg.end),
-          haloPaint,
-        );
-      }
+      canvas.drawPath(screenPath, haloPaint);
     }
 
     final linePaint = Paint()
@@ -518,22 +689,17 @@ class _BilliardTablePainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
 
-    for (final seg in path.segments) {
-      final a = mapper.diagramToScreen(seg.start);
-      final b = mapper.diagramToScreen(seg.end);
-      if (path.isDashed) {
-        _drawDashedLine(canvas, a, b, linePaint);
-      } else {
-        canvas.drawLine(a, b, linePaint);
-      }
+    if (path.isDashed) {
+      _drawDashedPath(canvas, screenPath, linePaint);
+    } else {
+      canvas.drawPath(screenPath, linePaint);
     }
 
-    // Mũi tên cuối đường theo hướng đoạn cuối khác độ dài 0
+    // Mũi tên cuối đường theo tiếp tuyến cuối (kể cả đoạn cong cubic và tiếp tuyến suy biến)
     if (path.arrowMode == ArrowMode.end && path.segments.isNotEmpty) {
       final dir = PathGeometry.lastNonZeroDirection(path);
       if (dir != null) {
         final tip = mapper.diagramToScreen(path.segments.last.end);
-        // Chuyển vector hướng từ hệ bàn (y lên) sang hệ màn hình (y xuống)
         final screenDir = Offset(dir.dx, -dir.dy);
         _drawArrowHead(canvas, tip, screenDir, baseColor, strokeWidth);
       }
@@ -580,6 +746,55 @@ class _BilliardTablePainter extends CustomPainter {
   }
 
   void _paintSelectedPathHandles(Canvas canvas, GuidePath path) {
+    // 1. Vẽ tay nắm Bézier (chỉ cho đường đang chọn và chế độ Chọn)
+    final tangentLinePaint = Paint()
+      ..color = const Color(0xFFB3E5FC).withValues(alpha: 0.85)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.3;
+
+    for (var sIdx = 0; sIdx < path.segments.length; sIdx++) {
+      final seg = path.segments[sIdx];
+      if (seg.type != SegmentType.cubic ||
+          seg.control1 == null ||
+          seg.control2 == null) {
+        continue;
+      }
+      final startPx = mapper.diagramToScreen(seg.start);
+      final endPx = mapper.diagramToScreen(seg.end);
+      final c1Px = mapper.diagramToScreen(seg.control1!);
+      final c2Px = mapper.diagramToScreen(seg.control2!);
+
+      _drawDashedLine(canvas, startPx, c1Px, tangentLinePaint, dashLen: 4.0, gapLen: 3.0);
+      _drawDashedLine(canvas, endPx, c2Px, tangentLinePaint, dashLen: 4.0, gapLen: 3.0);
+
+      for (final entry in [(1, c1Px), (2, c2Px)]) {
+        final handleIdx = entry.$1;
+        final pos = entry.$2;
+        final isActive = selectedControlHandle != null &&
+            selectedControlHandle!.segmentIndex == sIdx &&
+            selectedControlHandle!.handleIndex == handleIdx;
+        final r = isActive ? 7.0 : 5.5;
+        final diamond = Path()
+          ..moveTo(pos.dx, pos.dy - r)
+          ..lineTo(pos.dx + r, pos.dy)
+          ..lineTo(pos.dx, pos.dy + r)
+          ..lineTo(pos.dx - r, pos.dy)
+          ..close();
+        canvas.drawPath(
+          diamond,
+          Paint()..color = isActive ? const Color(0xFF00E5FF) : const Color(0xFFFFECB3),
+        );
+        canvas.drawPath(
+          diamond,
+          Paint()
+            ..color = const Color(0xFF0D47A1)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = isActive ? 2.0 : 1.4,
+        );
+      }
+    }
+
+    // 2. Vẽ các đỉnh nối
     final vertices = PathGeometry.extractVertices(path);
     for (var i = 0; i < vertices.length; i++) {
       final c = mapper.diagramToScreen(vertices[i]);
@@ -602,6 +817,237 @@ class _BilliardTablePainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = isActiveVertex ? 2.2 : 1.5,
       );
+    }
+  }
+
+  void _paintAnnotation(Canvas canvas, DiagramAnnotation ann, double scale) {
+    final isSelected = ann.id == selectedAnnotationId;
+    final color = ann.colorValue != null
+        ? Color(ann.colorValue!)
+        : AnnotationGeometry.defaultColorFor(ann.type);
+    final center = mapper.diagramToScreen(ann.position);
+
+    switch (ann.type) {
+      case AnnotationType.circleZone:
+        final radiusPx = ann.radius * scale;
+        final zonePath = Path()
+          ..addOval(Rect.fromCircle(center: center, radius: radiusPx));
+        canvas.drawPath(
+          zonePath,
+          Paint()..color = color.withValues(alpha: 0.16),
+        );
+        if (isSelected) {
+          canvas.drawPath(
+            zonePath,
+            Paint()
+              ..color = const Color(0xFF80D8FF).withValues(alpha: 0.6)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = ann.strokeWidth + 4.0,
+          );
+        }
+        final strokePaint = Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = ann.strokeWidth;
+        if (ann.isDashed) {
+          _drawDashedPath(canvas, zonePath, strokePaint);
+        } else {
+          canvas.drawPath(zonePath, strokePaint);
+        }
+        if (ann.text.isNotEmpty) {
+          _drawCenteredAnnotationText(
+            canvas,
+            center,
+            ann.text,
+            color,
+            11.0,
+          );
+        }
+
+      case AnnotationType.rectZone:
+        final wPx = ann.width * scale;
+        final hPx = ann.height * scale;
+        final rect = Rect.fromCenter(center: center, width: wPx, height: hPx);
+        final rectPath = Path()..addRect(rect);
+        canvas.drawRect(
+          rect,
+          Paint()..color = color.withValues(alpha: 0.16),
+        );
+        if (isSelected) {
+          canvas.drawRect(
+            rect,
+            Paint()
+              ..color = const Color(0xFF80D8FF).withValues(alpha: 0.6)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = ann.strokeWidth + 4.0,
+          );
+        }
+        final strokePaint = Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = ann.strokeWidth;
+        if (ann.isDashed) {
+          _drawDashedPath(canvas, rectPath, strokePaint);
+        } else {
+          canvas.drawRect(rect, strokePaint);
+        }
+        if (ann.text.isNotEmpty) {
+          _drawCenteredAnnotationText(
+            canvas,
+            center,
+            ann.text,
+            color,
+            11.0,
+          );
+        }
+
+      case AnnotationType.marker:
+        final rPx = (ann.radius * scale).clamp(4.0, 24.0);
+        if (isSelected) {
+          canvas.drawCircle(
+            center,
+            rPx + 4.0,
+            Paint()
+              ..color = const Color(0xFF80D8FF).withValues(alpha: 0.7)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 2.4,
+          );
+        }
+        canvas.drawCircle(center, rPx, Paint()..color = color);
+        canvas.drawCircle(
+          center,
+          rPx,
+          Paint()
+            ..color = Colors.black87
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.2,
+        );
+
+      case AnnotationType.sequence:
+        final rPx = (ann.radius * scale).clamp(11.0, 26.0);
+        if (isSelected) {
+          canvas.drawCircle(
+            center,
+            rPx + 4.0,
+            Paint()
+              ..color = const Color(0xFF80D8FF).withValues(alpha: 0.75)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 2.5,
+          );
+        }
+        canvas.drawCircle(center, rPx, Paint()..color = color);
+        canvas.drawCircle(
+          center,
+          rPx,
+          Paint()
+            ..color = const Color(0xFF212121)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = ann.strokeWidth.clamp(1.0, 3.0),
+        );
+        _drawCenteredAnnotationText(
+          canvas,
+          center,
+          ann.text.isEmpty ? '1' : ann.text,
+          const Color(0xFF1A1A1A),
+          (rPx * 1.05).clamp(10.0, 16.0),
+        );
+
+      case AnnotationType.label:
+        final content = ann.text.isEmpty ? 'Nhãn' : ann.text;
+        final tp = TextPainter(
+          text: TextSpan(
+            text: content,
+            style: TextStyle(
+              color: const Color(0xFF0D253F),
+              fontSize: 12.0,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        final pillRect = Rect.fromCenter(
+          center: center,
+          width: tp.width + 14.0,
+          height: tp.height + 8.0,
+        );
+        final rrect = RRect.fromRectAndRadius(pillRect, const Radius.circular(8.0));
+        if (isSelected) {
+          canvas.drawRRect(
+            rrect.inflate(3.0),
+            Paint()
+              ..color = const Color(0xFF80D8FF).withValues(alpha: 0.75)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 2.4,
+          );
+        }
+        canvas.drawRRect(rrect, Paint()..color = color.withValues(alpha: 0.92));
+        final borderPaint = Paint()
+          ..color = const Color(0xFF0D47A1)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = ann.strokeWidth.clamp(1.0, 3.0);
+        if (ann.isDashed) {
+          _drawDashedPath(canvas, Path()..addRRect(rrect), borderPaint);
+        } else {
+          canvas.drawRRect(rrect, borderPaint);
+        }
+        tp.paint(
+          canvas,
+          Offset(center.dx - tp.width / 2.0, center.dy - tp.height / 2.0),
+        );
+    }
+
+    if (ann.locked) {
+      final badgePos = center + const Offset(10.0, -10.0);
+      canvas.drawCircle(badgePos, 4.5, Paint()..color = const Color(0xFF263238));
+      canvas.drawCircle(
+        badgePos,
+        4.5,
+        Paint()
+          ..color = Colors.amberAccent
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.0,
+      );
+    }
+  }
+
+  void _drawCenteredAnnotationText(
+    Canvas canvas,
+    Offset center,
+    String text,
+    Color color,
+    double fontSize,
+  ) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          color: color,
+          fontSize: fontSize,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(
+      canvas,
+      Offset(center.dx - tp.width / 2.0, center.dy - tp.height / 2.0),
+    );
+  }
+
+  void _drawDashedPath(
+    Canvas canvas,
+    Path path,
+    Paint paint, {
+    double dashLen = 8.0,
+    double gapLen = 5.0,
+  }) {
+    for (final metric in path.computeMetrics()) {
+      var dist = 0.0;
+      while (dist < metric.length) {
+        final nextEnd = math.min(metric.length, dist + dashLen);
+        canvas.drawPath(metric.extractPath(dist, nextEnd), paint);
+        dist += dashLen + gapLen;
+      }
     }
   }
 
@@ -807,6 +1253,9 @@ class _BilliardTablePainter extends CustomPainter {
         oldDelegate.selectedBallId != selectedBallId ||
         oldDelegate.selectedPathId != selectedPathId ||
         oldDelegate.selectedVertexIndex != selectedVertexIndex ||
+        oldDelegate.selectedSegmentIndex != selectedSegmentIndex ||
+        oldDelegate.selectedControlHandle != selectedControlHandle ||
+        oldDelegate.selectedAnnotationId != selectedAnnotationId ||
         oldDelegate.invalidPathIds.length != invalidPathIds.length ||
         !oldDelegate.invalidPathIds.containsAll(invalidPathIds) ||
         oldDelegate.draftPoints.length != draftPoints.length ||
