@@ -46,10 +46,11 @@ void main() {
       expect(find.text('Gom dọc băng dài'), findsOneWidget);
     });
 
-    testWidgets('Hỗ trợ tìm kiếm, bật bộ lọc Yêu thích và xóa lọc ở trạng thái rỗng',
+    testWidgets('Không hiển thị thanh tìm kiếm; hỗ trợ lọc Yêu thích và xóa lọc ở trạng thái rỗng',
         (WidgetTester tester) async {
       await tester.pumpWidget(const LibreBilliardApp());
 
+      expect(find.byType(TextField), findsNothing);
       expect(find.text('Chưa có bài nào trong mục Kĩ thuật'), findsOneWidget);
 
       await tester.tap(find.byTooltip('Yêu thích'));

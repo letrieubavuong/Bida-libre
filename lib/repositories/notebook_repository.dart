@@ -8,7 +8,6 @@ abstract class NotebookRepository {
     ArticleKind? kind,
     String? groupId,
     bool favoritesOnly = false,
-    String query = '',
   });
   List<Collection> getCollections();
   List<Tag> getTags();
@@ -49,19 +48,11 @@ class InMemoryNotebookRepository implements NotebookRepository {
     ArticleKind? kind,
     String? groupId,
     bool favoritesOnly = false,
-    String query = '',
   }) {
-    final normalizedQuery = query.trim().toLowerCase();
     return _articles.where((article) {
       if (kind != null && article.kind != kind) return false;
       if (groupId != null && article.primaryGroupId != groupId) return false;
       if (favoritesOnly && !article.isFavorite) return false;
-      if (normalizedQuery.isNotEmpty) {
-        final inTitle = article.title.toLowerCase().contains(normalizedQuery);
-        final inCode = article.code.toLowerCase().contains(normalizedQuery);
-        final inSummary = article.summary.toLowerCase().contains(normalizedQuery);
-        if (!inTitle && !inCode && !inSummary) return false;
-      }
       return true;
     }).toList(growable: false);
   }

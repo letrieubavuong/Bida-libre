@@ -15,8 +15,6 @@ class NotebookHomeScreen extends StatefulWidget {
 }
 
 class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
-  final TextEditingController _searchController = TextEditingController();
-
   NotebookController get _controller => widget.controller;
 
   @override
@@ -28,14 +26,10 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
   @override
   void dispose() {
     _controller.removeListener(_onControllerChanged);
-    _searchController.dispose();
     super.dispose();
   }
 
   void _onControllerChanged() {
-    if (_searchController.text != _controller.searchQuery) {
-      _searchController.text = _controller.searchQuery;
-    }
     setState(() {});
   }
 
@@ -127,77 +121,32 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
           ),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(104.0),
-          child: Column(
-            children: [
-              // Thanh tìm kiếm và tùy chọn "Tất cả nội dung"
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _searchController,
-                        decoration: InputDecoration(
-                          hintText: _controller.searchAllContent
-                              ? 'Tìm trong tất cả nội dung...'
-                              : 'Tìm trong ${currentKind.label.toLowerCase()}...',
-                          prefixIcon: const Icon(Icons.search, size: 20.0),
-                          suffixIcon: _controller.searchQuery.isNotEmpty
-                              ? IconButton(
-                                  icon: const Icon(Icons.clear, size: 18.0),
-                                  onPressed: () => _controller.setSearchQuery(''),
-                                )
-                              : null,
-                          isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 12.0,
-                            vertical: 8.0,
-                          ),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(24.0),
-                          ),
-                        ),
-                        onChanged: _controller.setSearchQuery,
-                      ),
-                    ),
-                    const SizedBox(width: 8.0),
-                    FilterChip(
-                      label: const Text('Tất cả'),
-                      selected: _controller.searchAllContent,
-                      onSelected: _controller.toggleSearchAllContent,
-                    ),
-                  ],
-                ),
-              ),
-              // Danh sách Chip nhóm chính
-              SizedBox(
-                height: 44.0,
-                child: ListView.separated(
-                  padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
-                  scrollDirection: Axis.horizontal,
-                  itemCount: groups.length + 1,
-                  separatorBuilder: (_, _) => const SizedBox(width: 8.0),
-                  itemBuilder: (context, index) {
-                    if (index == 0) {
-                      final isSelected = _controller.selectedGroupId == null;
-                      return ChoiceChip(
-                        label: const Text('Tất cả nhóm'),
-                        selected: isSelected,
-                        onSelected: (_) => _controller.selectGroup(null),
-                      );
-                    }
-                    final group = groups[index - 1];
-                    final isSelected = _controller.selectedGroupId == group.id;
-                    return ChoiceChip(
-                      label: Text(group.name),
-                      selected: isSelected,
-                      onSelected: (_) => _controller.selectGroup(group.id),
-                    );
-                  },
-                ),
-              ),
-            ],
+          preferredSize: const Size.fromHeight(48.0),
+          child: SizedBox(
+            height: 44.0,
+            child: ListView.separated(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
+              scrollDirection: Axis.horizontal,
+              itemCount: groups.length + 1,
+              separatorBuilder: (_, _) => const SizedBox(width: 8.0),
+              itemBuilder: (context, index) {
+                if (index == 0) {
+                  final isSelected = _controller.selectedGroupId == null;
+                  return ChoiceChip(
+                    label: const Text('Tất cả nhóm'),
+                    selected: isSelected,
+                    onSelected: (_) => _controller.selectGroup(null),
+                  );
+                }
+                final group = groups[index - 1];
+                final isSelected = _controller.selectedGroupId == group.id;
+                return ChoiceChip(
+                  label: Text(group.name),
+                  selected: isSelected,
+                  onSelected: (_) => _controller.selectGroup(group.id),
+                );
+              },
+            ),
           ),
         ),
       ),
@@ -291,7 +240,7 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
             const SizedBox(height: 8.0),
             Text(
               hasFilters
-                  ? 'Hãy thử thay đổi từ khóa hoặc xóa bộ lọc để xem lại danh sách.'
+                  ? 'Hãy xóa bộ lọc để xem lại danh sách.'
                   : 'Nhấn nút "+" bên dưới để tạo bài viết đầu tiên của bạn khi hoàn tất Phase 4.',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(context).colorScheme.outline,

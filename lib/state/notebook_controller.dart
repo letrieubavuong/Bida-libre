@@ -7,8 +7,6 @@ class NotebookController extends ChangeNotifier {
   final NotebookRepository _repository;
 
   ArticleKind _currentTab = ArticleKind.technique;
-  String _searchQuery = '';
-  bool _searchAllContent = false;
   bool _favoritesOnly = false;
   final Map<ArticleKind, String?> _selectedGroupByTab = {
     ArticleKind.technique: null,
@@ -20,41 +18,22 @@ class NotebookController extends ChangeNotifier {
       : _repository = repository ?? InMemoryNotebookRepository();
 
   ArticleKind get currentTab => _currentTab;
-  String get searchQuery => _searchQuery;
-  bool get searchAllContent => _searchAllContent;
   bool get favoritesOnly => _favoritesOnly;
   String? get selectedGroupId => _selectedGroupByTab[_currentTab];
 
-  bool get hasActiveFilters =>
-      _searchQuery.trim().isNotEmpty ||
-      _searchAllContent ||
-      _favoritesOnly ||
-      selectedGroupId != null;
+  bool get hasActiveFilters => _favoritesOnly || selectedGroupId != null;
 
   List<EditorialGroup> get currentGroups => _repository.getGroups(_currentTab);
 
   List<Article> get visibleArticles => _repository.getArticles(
-        kind: _searchAllContent ? null : _currentTab,
-        groupId: _searchAllContent ? null : selectedGroupId,
+        kind: _currentTab,
+        groupId: selectedGroupId,
         favoritesOnly: _favoritesOnly,
-        query: _searchQuery,
       );
 
   void selectTab(ArticleKind kind) {
     if (_currentTab == kind) return;
     _currentTab = kind;
-    notifyListeners();
-  }
-
-  void setSearchQuery(String query) {
-    if (_searchQuery == query) return;
-    _searchQuery = query;
-    notifyListeners();
-  }
-
-  void toggleSearchAllContent(bool value) {
-    if (_searchAllContent == value) return;
-    _searchAllContent = value;
     notifyListeners();
   }
 
@@ -72,11 +51,8 @@ class NotebookController extends ChangeNotifier {
   }
 
   void clearFilters() {
-    _searchQuery = '';
-    _searchAllContent = false;
     _favoritesOnly = false;
     _selectedGroupByTab[_currentTab] = null;
     notifyListeners();
   }
 }
-

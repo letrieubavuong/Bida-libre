@@ -28,7 +28,7 @@ libre_billiard_notebook/
 │   │   └── notebook_controller.dart  # Trạng thái điều hướng 3 tab & bộ lọc dùng chung
 │   └── ui/
 │       └── screens/
-│           └── notebook_home_screen.dart # Khung 3 tab, tìm kiếm, chip nhóm, menu & trạng thái rỗng
+│           └── notebook_home_screen.dart # Khung 3 tab, chip nhóm, lọc Yêu thích, menu & trạng thái rỗng
 ├── test/
 │   └── widget_test.dart              # Kiểm thử NAV-01 & round-trip model Phase 0
 ├── AGENTS.md                         # Quy tắc làm việc cho agent trong dự án này
