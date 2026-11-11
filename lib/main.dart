@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'repositories/scene_storage.dart';
 import 'state/notebook_controller.dart';
 import 'ui/screens/notebook_home_screen.dart';
 
@@ -8,10 +9,12 @@ void main() {
 
 class LibreBilliardApp extends StatefulWidget {
   final NotebookController? controller;
+  final SceneStorage? sceneStorage;
 
   const LibreBilliardApp({
     super.key,
     this.controller,
+    this.sceneStorage,
   });
 
   @override
@@ -49,7 +52,10 @@ class _LibreBilliardAppState extends State<LibreBilliardApp> {
         ),
         useMaterial3: true,
       ),
-      home: NotebookHomeScreen(controller: _controller),
+      home: NotebookHomeScreen(
+        controller: _controller,
+        sceneStorage: widget.sceneStorage,
+      ),
     );
   }
 }

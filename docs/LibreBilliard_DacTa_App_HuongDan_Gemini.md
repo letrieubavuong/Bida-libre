@@ -400,7 +400,7 @@ Khôi phục phải:
 
 ## 12. Các phase triển khai và cổng nghiệm thu
 
-**Mỗi phase:** báo phần đã làm, kiểm tra đã chạy, giới hạn còn lại, commit, APK tải được và ảnh màn hình. Dừng chờ nghiệm thu trước phase sau. Không báo hoàn thành chỉ bằng mô tả hoặc mã nguồn chưa chạy.
+**Mỗi phase:** báo phần đã làm, kiểm tra đã chạy (`flutter analyze`, `flutter test`), giới hạn còn lại, commit, APK tải được và SHA-256. Không yêu cầu chụp ảnh màn hình hay quay video. Dừng chờ nghiệm thu trước phase sau. Không báo hoàn thành chỉ bằng mô tả hoặc mã nguồn chưa chạy.
 
 | Phase | Phạm vi | Điều kiện nghiệm thu |
 | --- | --- | --- |
@@ -487,7 +487,6 @@ Branch / commit:
 Đường dẫn dự án:
 Chức năng đã hoàn thành:
 Kiểm tra đã chạy và kết quả:
-Ảnh/video thao tác:
 APK và SHA-256:
 Các bước nghiệm thu trên điện thoại:
 Lỗi/giới hạn còn lại:

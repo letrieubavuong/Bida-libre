@@ -17,5 +17,5 @@ Tài liệu này quy định các nguyên tắc bắt buộc khi làm việc tro
   - `repositories/`: Giao diện lưu trữ thống nhất (SQLite cho metadata/quan hệ và JSON vector cho scene).
   - `state/`: Quản lý trạng thái gọn gàng, có thể kiểm thử không phụ thuộc UI.
   - `ui/`: Giao diện tiếng Việt chuẩn, hỗ trợ offline.
-- **Testing**: Chạy `flutter analyze` và `flutter test` trước khi commit hoặc bàn giao.
+- **Testing & Bàn giao**: Chạy `flutter analyze`, `flutter test` và build APK kèm SHA-256 trước khi commit hoặc bàn giao. Không yêu cầu chụp ảnh màn hình hay quay video.
 

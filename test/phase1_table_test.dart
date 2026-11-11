@@ -4,6 +4,7 @@ import 'package:libre_billiard_notebook/geometry/table_constants.dart';
 import 'package:libre_billiard_notebook/geometry/table_geometry.dart';
 import 'package:libre_billiard_notebook/main.dart';
 import 'package:libre_billiard_notebook/models/models.dart';
+import 'package:libre_billiard_notebook/repositories/scene_storage.dart';
 import 'package:libre_billiard_notebook/state/table_editor_controller.dart';
 import 'package:libre_billiard_notebook/ui/screens/table_stage_screen.dart';
 
@@ -334,7 +335,9 @@ void main() {
   group('B, E & F: Widget tests cho Dựng thế bi, xoay màn hình, bàn phím & Pan Cancel', () {
     testWidgets('Mở Dựng thế bi từ tab Hình bi, không hiển thị thuật ngữ Phase hay Đã lưu',
         (WidgetTester tester) async {
-      await tester.pumpWidget(const LibreBilliardApp());
+      await tester.pumpWidget(
+        LibreBilliardApp(sceneStorage: MemorySceneStorage()),
+      );
 
       // Chuyển sang tab Hình bi
       await tester.tap(find.text('Hình bi'));

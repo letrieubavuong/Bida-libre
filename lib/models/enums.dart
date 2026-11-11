@@ -108,6 +108,23 @@ enum PathRole {
   }
 }
 
+enum ArrowMode {
+  none('none', 'Không mũi tên'),
+  end('end', 'Mũi tên cuối');
+
+  const ArrowMode(this.storageKey, this.label);
+
+  final String storageKey;
+  final String label;
+
+  static ArrowMode fromKey(String key) {
+    return ArrowMode.values.firstWhere(
+      (e) => e.storageKey == key,
+      orElse: () => ArrowMode.end,
+    );
+  }
+}
+
 enum AnnotationType {
   label('label'),
   sequence('sequence'),

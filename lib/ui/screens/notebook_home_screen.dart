@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
 import '../../models/models.dart';
+import '../../repositories/scene_storage.dart';
 import '../../state/notebook_controller.dart';
 import 'table_stage_screen.dart';
 
 class NotebookHomeScreen extends StatefulWidget {
   final NotebookController controller;
+  final SceneStorage? sceneStorage;
 
   const NotebookHomeScreen({
     super.key,
     required this.controller,
+    this.sceneStorage,
   });
 
   @override
@@ -60,7 +63,7 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
   void _openTableStage() {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => const TableStageScreen(),
+        builder: (_) => TableStageScreen(storage: widget.sceneStorage),
       ),
     );
   }
