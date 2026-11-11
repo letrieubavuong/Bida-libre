@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -9,6 +10,38 @@ import 'package:libre_billiard_notebook/models/models.dart';
 import 'package:libre_billiard_notebook/repositories/scene_storage.dart';
 import 'package:libre_billiard_notebook/state/table_editor_controller.dart';
 import 'package:libre_billiard_notebook/ui/screens/table_stage_screen.dart';
+
+class _DelayedCompleterStorage implements SceneStorage {
+  Completer<DiagramScene?>? loadCompleter;
+  Completer<void>? saveCompleter;
+  DiagramScene? stored;
+  int saveCallCount = 0;
+  int loadCallCount = 0;
+  Object? nextLoadError;
+
+  _DelayedCompleterStorage();
+
+  @override
+  Future<DiagramScene?> loadScene() async {
+    loadCallCount++;
+    if (loadCompleter != null) {
+      return loadCompleter!.future;
+    }
+    if (nextLoadError != null) {
+      throw nextLoadError!;
+    }
+    return stored;
+  }
+
+  @override
+  Future<void> saveScene(DiagramScene scene) async {
+    saveCallCount++;
+    if (saveCompleter != null) {
+      await saveCompleter!.future;
+    }
+    stored = scene;
+  }
+}
 
 class _ToggleFailingStorage implements SceneStorage {
   bool shouldFailWrite;
@@ -397,12 +430,12 @@ void main() {
       expect(writer.completeDraftPath(), isNull);
       expect(writer.hasUnsavedChanges, isTrue);
 
-      expect(await writer.saveToStorage(), isNull);
+      expect((await writer.saveToStorage()).status, SaveStatus.savedAll);
       expect(writer.hasUnsavedChanges, isFalse);
 
       // Giả lập đóng & mở lại app bằng controller mới đọc từ cùng thư mục
       final reader = TableEditorController(storage: storage);
-      expect(await reader.loadFromStorage(), isNull);
+      expect((await reader.loadFromStorage()).status, LoadStatus.loaded);
       expect(reader.scene, writer.scene);
       expect(reader.paths.length, 1);
       expect(reader.paths.first.startAnchorBallId, 'ball_white');
@@ -535,6 +568,344 @@ void main() {
       // Bản đã lưu trong storage không bị thay đổi
       final storedAfter = await storage.loadScene();
       expect(storedAfter?.paths, isEmpty);
+    });
+  });
+
+  group('Phase 2 Fix A — Lưu/tải bất đồng bộ & phục hồi FileSceneStorage', () {
+    test('Lưu snapshot A -> sửa thành B -> hoàn tất lưu: đĩa chứa A, editor chứa B chưa lưu',
+        () async {
+      final storage = _DelayedCompleterStorage()..saveCompleter = Completer<void>();
+      final controller = TableEditorController(storage: storage);
+      addTearDown(controller.dispose);
+
+      // Bản A
+      controller.setBallPosition('ball_white', const DiagramPoint(100, 100));
+      final snapshotA = controller.scene;
+
+      final saveFuture = controller.saveToStorage();
+      expect(controller.isSaving, isTrue);
+
+      // Trong lúc đang chờ ghi A, người dùng sửa tiếp thành B
+      controller.setBallPosition('ball_white', const DiagramPoint(125, 130));
+      final snapshotB = controller.scene;
+      expect(snapshotB, isNot(snapshotA));
+
+      // Hoàn tất ghi xuống storage
+      storage.saveCompleter!.complete();
+      final outcome = await saveFuture;
+
+      expect(outcome.status, SaveStatus.savedSnapshotWithNewerEdits);
+      expect(storage.stored, snapshotA);
+      expect(controller.scene, snapshotB);
+      expect(controller.hasUnsavedChanges, isTrue);
+      expect(controller.isSaving, isFalse);
+    });
+
+    test('Gọi saveToStorage hai lần đồng thời bị từ chối và chỉ ghi một lần',
+        () async {
+      final storage = _DelayedCompleterStorage()..saveCompleter = Completer<void>();
+      final controller = TableEditorController(storage: storage);
+      addTearDown(controller.dispose);
+
+      controller.setBallPosition('ball_white', const DiagramPoint(110, 110));
+
+      final firstSave = controller.saveToStorage();
+      final secondSave = await controller.saveToStorage();
+
+      expect(secondSave.status, SaveStatus.rejectedBusy);
+      expect(storage.saveCallCount, 1);
+
+      storage.saveCompleter!.complete();
+      final firstOutcome = await firstSave;
+      expect(firstOutcome.status, SaveStatus.savedAll);
+    });
+
+    testWidgets('Tải chậm khóa mọi thao tác chỉnh sửa ở controller và UI; hủy không ghi đè',
+        (WidgetTester tester) async {
+      final savedScene = DiagramScene.defaultInitial(id: 'saved').copyWith(
+        balls: DiagramScene.defaultInitial(id: 'saved')
+            .balls
+            .map(
+              (b) => b.id == 'ball_white'
+                  ? b.copyWith(center: const DiagramPoint(130, 140))
+                  : b,
+            )
+            .toList(growable: false),
+      );
+      final storage = _DelayedCompleterStorage()
+        ..loadCompleter = Completer<DiagramScene?>();
+      final controller = TableEditorController(storage: storage);
+
+      await tester.pumpWidget(
+        MaterialApp(home: TableStageScreen(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+
+      // Bắt đầu tải chậm
+      final loadFuture = controller.loadFromStorage();
+      await tester.pump();
+
+      expect(controller.isLoading, isTrue);
+      expect(controller.isEditingLocked, isTrue);
+
+      // Thử chỉnh từ tầng controller bị chặn
+      expect(
+        controller.setBallPosition('ball_white', const DiagramPoint(50, 50)),
+        isNotNull,
+      );
+      expect(controller.setToolMode(EditorToolMode.drawPolyline), isFalse);
+      expect(controller.toggleBallLock('ball_white'), isFalse);
+
+      // Trên UI các nút chỉnh sửa/lưu đều vô hiệu hóa
+      expect(
+        tester.widget<IconButton>(find.byKey(const Key('save_scene_button'))).onPressed,
+        isNull,
+      );
+      expect(
+        tester.widget<IconButton>(find.byKey(const Key('mode_draw_chip'))).onPressed,
+        isNull,
+      );
+
+      storage.loadCompleter!.complete(savedScene);
+      final outcome = await loadFuture;
+      await tester.pumpAndSettle();
+
+      expect(outcome.status, LoadStatus.loaded);
+      expect(controller.isLoading, isFalse);
+      expect(
+        controller.balls.firstWhere((b) => b.id == 'ball_white').center,
+        const DiagramPoint(130, 140),
+      );
+
+      // Có thay đổi chưa lưu -> tải lại không force trả về needsConfirmation & giữ nguyên chỉnh sửa
+      controller.setBallPosition('ball_white', const DiagramPoint(150, 150));
+      storage.loadCompleter = null;
+      storage.stored = savedScene;
+      final blockedLoad = await controller.loadFromStorage();
+      expect(blockedLoad.status, LoadStatus.needsConfirmation);
+      expect(
+        controller.balls.firstWhere((b) => b.id == 'ball_white').center,
+        const DiagramPoint(150, 150),
+      );
+
+      // Lỗi tải phải giữ nguyên trạng thái đang chỉnh
+      storage.nextLoadError = const FileSystemException('Lỗi đọc ổ đĩa');
+      final failedLoad = await controller.loadFromStorage(force: true);
+      expect(failedLoad.status, LoadStatus.error);
+      expect(
+        controller.balls.firstWhere((b) => b.id == 'ball_white').center,
+        const DiagramPoint(150, 150),
+      );
+    });
+
+    test('Rời màn hình / dispose controller khi đang lưu hoặc đang tải không gây lỗi notifyListeners',
+        () async {
+      final storage = _DelayedCompleterStorage()
+        ..saveCompleter = Completer<void>()
+        ..loadCompleter = Completer<DiagramScene?>();
+
+      final saveController = TableEditorController(storage: storage);
+      saveController.setBallPosition('ball_white', const DiagramPoint(110, 120));
+      final saveFuture = saveController.saveToStorage();
+      saveController.dispose();
+      storage.saveCompleter!.complete();
+      final saveOutcome = await saveFuture;
+      expect(saveOutcome.isSuccess, isTrue);
+
+      final loadController = TableEditorController(storage: storage);
+      final loadFuture = loadController.loadFromStorage();
+      loadController.dispose();
+      storage.loadCompleter!.complete(DiagramScene.defaultInitial(id: 'loaded'));
+      final loadOutcome = await loadFuture;
+      expect(loadOutcome.status, LoadStatus.loaded);
+    });
+
+    test('FileSceneStorage lỗi ở bước thay thế giữ bản cũ; tệp hỏng phục hồi từ .bak và giữ .corrupt',
+        () async {
+      final tempDir =
+          await Directory.systemTemp.createTemp('libre_billiard_recovery_');
+      addTearDown(() async {
+        if (await tempDir.exists()) {
+          await tempDir.delete(recursive: true);
+        }
+      });
+
+      final normalStorage = FileSceneStorage(directoryProvider: () async => tempDir);
+      final sceneA = DiagramScene.defaultInitial(id: 'scene_a').copyWith(
+        balls: DiagramScene.defaultInitial(id: 'scene_a')
+            .balls
+            .map(
+              (b) => b.id == 'ball_white'
+                  ? b.copyWith(center: const DiagramPoint(60, 80))
+                  : b,
+            )
+            .toList(growable: false),
+      );
+      await normalStorage.saveScene(sceneA);
+
+      // Giả lập lỗi ở bước thay thế tệp khi lưu bản B
+      final failingReplaceStorage = FileSceneStorage(
+        directoryProvider: () async => tempDir,
+        replaceFile: (_, _) async {
+          throw const FileSystemException('Giả lập ngắt nguồn khi thay thế tệp');
+        },
+      );
+      final sceneB = sceneA.copyWith(
+        balls: sceneA.balls
+            .map(
+              (b) => b.id == 'ball_white'
+                  ? b.copyWith(center: const DiagramPoint(130, 260))
+                  : b,
+            )
+            .toList(growable: false),
+      );
+
+      await expectLater(
+        failingReplaceStorage.saveScene(sceneB),
+        throwsA(isA<FileSystemException>()),
+      );
+
+      // Bản A vẫn đọc lại nguyên vẹn
+      final afterFail = await normalStorage.loadScene();
+      expect(afterFail, sceneA);
+
+      // Ghi thành công bản B để tạo tệp backup .bak chứa bản A
+      await normalStorage.saveScene(sceneB);
+      final loadedB = await normalStorage.loadScene();
+      expect(loadedB, sceneB);
+
+      // Làm hỏng tệp chính -> loadScene phải phục hồi được từ .bak (chứa A) và giữ bản .corrupt
+      final primaryFile =
+          File('${tempDir.path}${Platform.pathSeparator}${FileSceneStorage.defaultFileName}');
+      await primaryFile.writeAsString('{corrupt-json-content');
+
+      final recovered = await normalStorage.loadScene();
+      expect(recovered, sceneA);
+
+      final dirEntries = tempDir.listSync().map((e) => e.path).toList();
+      expect(dirEntries.any((p) => p.contains('.corrupt')), isTrue);
+    });
+  });
+
+  group('Phase 2 Fix B/C/D — Canvas toàn vùng & công cụ nổi', () {
+    testWidgets('Mở/đóng/thu gọn công cụ nổi và mở bàn phím không đổi kích thước canvas hay tọa độ',
+        (WidgetTester tester) async {
+      final controller = TableEditorController();
+      controller.setBallPosition('ball_white', const DiagramPoint(108.5, 162.25));
+
+      tester.view.physicalSize = const Size(420, 840);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetViewInsets);
+
+      await tester.pumpWidget(
+        MaterialApp(home: TableStageScreen(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+
+      final initialCanvasSize =
+          tester.getSize(find.byKey(const Key('billiard_table_canvas')));
+
+      // Thu gọn rồi mở lại thanh công cụ nổi -> kích thước canvas không đổi
+      await tester.tap(find.byKey(const Key('floating_toolbar_collapse_button')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.getSize(find.byKey(const Key('billiard_table_canvas'))),
+        initialCanvasSize,
+      );
+
+      await tester.tap(find.byKey(const Key('floating_toolbar_collapse_button')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.getSize(find.byKey(const Key('billiard_table_canvas'))),
+        initialCanvasSize,
+      );
+
+      // Mở bảng nhập tọa độ X/Y và bật bàn phím ảo -> canvas vẫn giữ nguyên Size và tọa độ
+      await tester.tap(find.byKey(const Key('open_xy_button')));
+      await tester.pumpAndSettle();
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      await tester.pumpAndSettle();
+
+      expect(
+        tester.getSize(find.byKey(const Key('billiard_table_canvas'))),
+        initialCanvasSize,
+      );
+      expect(
+        controller.balls.firstWhere((b) => b.id == 'ball_white').center,
+        const DiagramPoint(108.5, 162.25),
+      );
+    });
+
+    testWidgets('Chạm/kéo công cụ nổi không xuyên xuống bàn; kéo thanh công cụ trong SafeArea',
+        (WidgetTester tester) async {
+      final controller = TableEditorController();
+
+      await tester.pumpWidget(
+        MaterialApp(home: TableStageScreen(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+
+      final initialHandleCenter =
+          tester.getCenter(find.byKey(const Key('floating_toolbar_drag_handle')));
+
+      // Kéo thanh công cụ nổi xuống phía dưới -> vị trí nút đổi nhưng không tạo bất kỳ nét/bi bị kéo
+      await tester.drag(
+        find.byKey(const Key('floating_toolbar_drag_handle')),
+        const Offset(40, 80),
+      );
+      await tester.pumpAndSettle();
+
+      final movedHandleCenter =
+          tester.getCenter(find.byKey(const Key('floating_toolbar_drag_handle')));
+      expect(movedHandleCenter.dy, greaterThan(initialHandleCenter.dy + 40));
+
+      // Chuyển sang Vẽ đường rồi chạm vào thanh thuộc tính nổi ở đáy -> KHÔNG thêm điểm nháp xuống bàn
+      await tester.tap(find.byKey(const Key('mode_draw_chip')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_draw_panel')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('draft_point_count_badge')));
+      await tester.pumpAndSettle();
+      expect(controller.draftPoints, isEmpty);
+    });
+
+    testWidgets('Chuyển từ Vẽ đường sang Chọn khi có nháp hỏi xác nhận & không xóa nhầm đường nháp',
+        (WidgetTester tester) async {
+      final controller = TableEditorController();
+
+      await tester.pumpWidget(
+        MaterialApp(home: TableStageScreen(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('mode_draw_chip')));
+      await tester.pumpAndSettle();
+
+      final canvasFinder = find.byKey(const Key('billiard_table_canvas'));
+      final topLeft = tester.getTopLeft(canvasFinder);
+      final mapper = TableCoordinateMapper(canvasSize: tester.getSize(canvasFinder));
+
+      await tester.tapAt(topLeft + mapper.diagramToScreen(const DiagramPoint(60, 120)));
+      await tester.pump();
+      await tester.tapAt(topLeft + mapper.diagramToScreen(const DiagramPoint(130, 240)));
+      await tester.pumpAndSettle();
+      expect(controller.draftPoints.length, 2);
+
+      // Bấm chuyển về Chọn / Di chuyển -> phải hiện hộp thoại xác nhận, chưa xóa nháp
+      await tester.tap(find.byKey(const Key('mode_select_chip')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Đang có đường vẽ dở'), findsOneWidget);
+      expect(controller.draftPoints.length, 2);
+
+      // Chọn Hoàn tất đường -> đưa đường vào scene và chuyển về Select
+      await tester.tap(find.text('Hoàn tất đường'));
+      await tester.pumpAndSettle();
+      expect(controller.toolMode, EditorToolMode.select);
+      expect(controller.paths.length, 1);
+      expect(controller.draftPoints, isEmpty);
     });
   });
 }

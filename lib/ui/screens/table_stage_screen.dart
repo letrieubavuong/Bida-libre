@@ -1,16 +1,16 @@
 import 'package:flutter/material.dart';
 
-import '../../geometry/path_geometry.dart';
 import '../../geometry/table_constants.dart';
 import '../../models/models.dart';
 import '../../repositories/scene_storage.dart';
 import '../../state/table_editor_controller.dart';
 import '../widgets/billiard_table_canvas.dart';
 
-/// Màn hình Dựng thế bi (Phase 1 + Phase 2):
-/// - Hỗ trợ đặt/kéo 3 bi, nhập tọa độ X/Y bảo toàn độ chính xác, khóa bi.
-/// - Hỗ trợ vẽ đường thẳng/gấp khúc, chỉnh điểm, đổi màu/nét/mũi tên, gắn điểm đầu với bi.
-/// - Lưu và mở lại một sơ đồ vào thư mục dữ liệu bền vững của ứng dụng.
+/// Màn hình Dựng thế bi toàn vùng (Phase 1 + Phase 2):
+/// - Canvas bàn bi phủ toàn vùng editor trong Stack, giữ đúng tỉ lệ 1:2 khi đóng/mở công cụ nổi hay bàn phím.
+/// - Thanh công cụ nổi gọn (kéo bằng tay nắm riêng, thu gọn/mở rộng, giữ trong vùng an toàn khi xoay).
+/// - Thuộc tính nổi gọn theo đối tượng (bi, đường, hoặc trạng thái đang vẽ); tùy chọn phụ mở qua sheet.
+/// - Lưu/tải bất đồng bộ an toàn với snapshot chụp trước khi await.
 class TableStageScreen extends StatefulWidget {
   final TableEditorController? controller;
   final SceneStorage? storage;
@@ -34,7 +34,13 @@ class _TableStageScreenState extends State<TableStageScreen> {
   final FocusNode _xFocus = FocusNode();
   final FocusNode _yFocus = FocusNode();
 
-  String? _coordinateError;
+  final GlobalKey _toolbarKey = GlobalKey();
+  Offset? _toolbarOffset;
+  bool _toolbarCollapsed = false;
+  bool _isDraggingToolbar = false;
+
+  final ValueNotifier<String?> _coordinateErrorNotifier =
+      ValueNotifier<String?>(null);
   String? _lastSyncedBallId;
   DiagramPoint? _lastSyncedCenter;
   int _lastAuthoritativeRevision = -1;
@@ -55,7 +61,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
     _controller.addListener(_onControllerChanged);
     _syncCoordinateFields(force: true);
     if (_ownsController) {
-      _controller.loadFromStorage();
+      _controller.loadFromStorage(force: true);
     }
   }
 
@@ -69,6 +75,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
     _yController.dispose();
     _xFocus.dispose();
     _yFocus.dispose();
+    _coordinateErrorNotifier.dispose();
     super.dispose();
   }
 
@@ -118,7 +125,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
           ballChanged ||
           revisionChanged ||
           _controller.isDraggingBall) {
-        _coordinateError = null;
+        _coordinateErrorNotifier.value = null;
       }
     }
   }
@@ -145,17 +152,19 @@ class _TableStageScreenState extends State<TableStageScreen> {
   }
 
   Future<void> _saveScene() async {
-    final err = await _controller.saveToStorage();
+    final outcome = await _controller.saveToStorage();
     if (!mounted) return;
-    if (err == null) {
-      _showSnack('Đã lưu sơ đồ');
+    if (outcome.isSuccess) {
+      _showSnack(outcome.message);
+    } else if (outcome.status == SaveStatus.rejectedBusy) {
+      _showSnack(outcome.message);
     } else {
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('Lỗi lưu sơ đồ'),
           content: Text(
-            '$err\n\nBản đang chỉnh vẫn được giữ lại để bạn thử lại.',
+            '${outcome.message}\n\nBản đang chỉnh vẫn được giữ lại để bạn thử lại.',
           ),
           actions: [
             TextButton(
@@ -175,8 +184,44 @@ class _TableStageScreenState extends State<TableStageScreen> {
     }
   }
 
+  Future<void> _reloadScene() async {
+    final firstTry = await _controller.loadFromStorage();
+    if (!mounted) return;
+    if (firstTry.status == LoadStatus.needsConfirmation) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Tải lại sơ đồ đã lưu?'),
+          content: const Text(
+            'Bạn đang có thay đổi chưa lưu. Tải lại từ bộ nhớ máy sẽ bỏ các thay đổi hiện tại.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Hủy'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Tải lại'),
+            ),
+          ],
+        ),
+      );
+      if (confirm == true && mounted) {
+        final forced = await _controller.loadFromStorage(force: true);
+        if (mounted && forced.status == LoadStatus.error) {
+          _showSnack('Lỗi tải sơ đồ: ${forced.message}');
+        }
+      }
+    } else if (firstTry.status == LoadStatus.error) {
+      _showSnack('Lỗi tải sơ đồ: ${firstTry.message}');
+    } else if (firstTry.status == LoadStatus.loaded) {
+      _showSnack('Đã tải lại sơ đồ từ máy');
+    }
+  }
+
   Future<void> _confirmDiscardAndExit() async {
-    if (_controller.isDraggingAny) return;
+    if (_controller.isDraggingAny || _controller.isLoading) return;
     if (!_controller.hasUnsavedChanges) {
       if (mounted) Navigator.of(context).pop();
       return;
@@ -207,25 +252,65 @@ class _TableStageScreenState extends State<TableStageScreen> {
     }
   }
 
-  void _applyManualCoordinates() {
-    if (_controller.isDraggingAny || _controller.isDrawingWithDraft) return;
+  Future<void> _switchToSelectMode() async {
+    if (_controller.isEditingLocked) return;
+    if (!_controller.isDrawingWithDraft) {
+      _controller.setToolMode(EditorToolMode.select);
+      return;
+    }
+
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Đang có đường vẽ dở'),
+        content: Text(
+          'Đường hiện tại đang có ${_controller.draftPoints.length} điểm. '
+          'Hãy chọn Hoàn tất hoặc Hủy đường nháp trước khi chuyển công cụ.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('continue'),
+            child: const Text('Tiếp tục vẽ'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('cancel'),
+            child: const Text('Hủy đường nháp'),
+          ),
+          if (_controller.canCompleteDraft)
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop('complete'),
+              child: const Text('Hoàn tất đường'),
+            ),
+        ],
+      ),
+    );
+
+    if (!mounted) return;
+    if (action == 'complete') {
+      final err = _controller.completeDraftPath();
+      if (err != null) _showSnack(err);
+    } else if (action == 'cancel') {
+      _controller.cancelDraftPath();
+    }
+  }
+
+  bool _applyManualCoordinates() {
+    if (_controller.isEditingLocked || _controller.isDrawingWithDraft) {
+      return false;
+    }
     final ball = _controller.selectedBall;
-    if (ball == null) return;
+    if (ball == null) return false;
 
     if (ball.locked) {
-      setState(() {
-        _coordinateError =
-            '${ball.color.label} đang bị khóa. Hãy mở khóa trước khi sửa tọa độ.';
-      });
-      return;
+      _coordinateErrorNotifier.value =
+          '${ball.color.label} đang bị khóa. Hãy mở khóa trước khi sửa tọa độ.';
+      return false;
     }
 
     if (!_xDirty && !_yDirty) {
       FocusScope.of(context).unfocus();
-      setState(() {
-        _coordinateError = null;
-      });
-      return;
+      _coordinateErrorNotifier.value = null;
+      return true;
     }
 
     double nextX = ball.center.x;
@@ -235,10 +320,9 @@ class _TableStageScreenState extends State<TableStageScreen> {
       final rawX = _xController.text.trim().replaceAll(',', '.');
       final parsedX = double.tryParse(rawX);
       if (parsedX == null || !parsedX.isFinite) {
-        setState(() {
-          _coordinateError = 'Vui lòng nhập số hữu hạn hợp lệ cho X.';
-        });
-        return;
+        _coordinateErrorNotifier.value =
+            'Vui lòng nhập số hữu hạn hợp lệ cho X.';
+        return false;
       }
       nextX = parsedX;
     }
@@ -247,10 +331,9 @@ class _TableStageScreenState extends State<TableStageScreen> {
       final rawY = _yController.text.trim().replaceAll(',', '.');
       final parsedY = double.tryParse(rawY);
       if (parsedY == null || !parsedY.isFinite) {
-        setState(() {
-          _coordinateError = 'Vui lòng nhập số hữu hạn hợp lệ cho Y.';
-        });
-        return;
+        _coordinateErrorNotifier.value =
+            'Vui lòng nhập số hữu hạn hợp lệ cho Y.';
+        return false;
       }
       nextY = parsedY;
     }
@@ -260,21 +343,143 @@ class _TableStageScreenState extends State<TableStageScreen> {
       DiagramPoint(nextX, nextY),
     );
     if (error != null) {
-      setState(() {
-        _coordinateError = error;
-      });
-      return;
+      _coordinateErrorNotifier.value = error;
+      return false;
     }
 
     FocusScope.of(context).unfocus();
-    setState(() {
-      _coordinateError = null;
-    });
+    _coordinateErrorNotifier.value = null;
     _syncCoordinateFields(force: true);
+    return true;
+  }
+
+  void _openCoordinateEditorSheet() {
+    if (_controller.isEditingLocked || _controller.selectedBall == null) return;
+    _syncCoordinateFields(force: true);
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return AnimatedBuilder(
+          animation: Listenable.merge([_controller, _coordinateErrorNotifier]),
+          builder: (context, _) {
+            final selected = _controller.selectedBall;
+            if (selected == null) return const SizedBox.shrink();
+            final r = selected.radius;
+            final coordError = _coordinateErrorNotifier.value;
+            final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+
+            return Padding(
+              key: const Key('xy_editor_sheet'),
+              padding: EdgeInsets.fromLTRB(16.0, 0.0, 16.0, 16.0 + bottomInset),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      _BallDot(color: selected.color),
+                      const SizedBox(width: 8.0),
+                      Text(
+                        'Tọa độ ${selected.color.label}',
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12.0),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          key: const Key('coord_x_input'),
+                          controller: _xController,
+                          focusNode: _xFocus,
+                          enabled: !selected.locked && !_controller.isEditingLocked,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                            signed: true,
+                          ),
+                          decoration: InputDecoration(
+                            labelText:
+                                'X (${r.toStringAsFixed(0)}..${(TableConstants.playfieldWidth - r).toStringAsFixed(0)})',
+                            isDense: true,
+                            border: const OutlineInputBorder(),
+                          ),
+                          onChanged: (value) {
+                            _xDirty = value != _syncedXText;
+                          },
+                          onSubmitted: (_) => _applyManualCoordinates(),
+                        ),
+                      ),
+                      const SizedBox(width: 8.0),
+                      Expanded(
+                        child: TextField(
+                          key: const Key('coord_y_input'),
+                          controller: _yController,
+                          focusNode: _yFocus,
+                          enabled: !selected.locked && !_controller.isEditingLocked,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                            signed: true,
+                          ),
+                          decoration: InputDecoration(
+                            labelText:
+                                'Y (${r.toStringAsFixed(0)}..${(TableConstants.playfieldHeight - r).toStringAsFixed(0)})',
+                            isDense: true,
+                            border: const OutlineInputBorder(),
+                          ),
+                          onChanged: (value) {
+                            _yDirty = value != _syncedYText;
+                          },
+                          onSubmitted: (_) => _applyManualCoordinates(),
+                        ),
+                      ),
+                      const SizedBox(width: 8.0),
+                      SizedBox(
+                        height: 48.0,
+                        child: FilledButton(
+                          key: const Key('apply_coords_button'),
+                          onPressed: (selected.locked ||
+                                  _controller.isEditingLocked)
+                              ? null
+                              : () {
+                                  if (_applyManualCoordinates() &&
+                                      sheetContext.mounted) {
+                                    Navigator.of(sheetContext).pop();
+                                  }
+                                },
+                          child: const Text('Đặt'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (coordError != null) ...[
+                    const SizedBox(height: 8.0),
+                    Text(
+                      coordError,
+                      key: const Key('coordinate_error_text'),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                        fontSize: 12.0,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   void _showDisplaySettingsSheet() {
-    if (_controller.isDraggingAny || _controller.isDrawingWithDraft) return;
+    if (_controller.isEditingLocked || _controller.isDrawingWithDraft) return;
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -363,7 +568,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
                           return ChoiceChip(
                             label: Text('r = ${r.toStringAsFixed(0)}'),
                             selected: selected,
-                            onSelected: _controller.isDraggingAny
+                            onSelected: _controller.isEditingLocked
                                 ? null
                                 : (_) async {
                                     final err = _controller.trySetBallRadius(r);
@@ -416,8 +621,59 @@ class _TableStageScreenState extends State<TableStageScreen> {
     );
   }
 
+  void _showDrawOptionsSheet() {
+    if (_controller.isEditingLocked) return;
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16.0, 0, 16.0, 24.0),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Tùy chọn đường đang vẽ',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                    ),
+                    const SizedBox(height: 8.0),
+                    SwitchListTile(
+                      key: const Key('draft_anchor_chip'),
+                      title: const Text('Gắn điểm đầu với bi'),
+                      subtitle: const Text('Kéo bi sẽ cập nhật theo điểm đầu'),
+                      value: _controller.draftAnchorStart,
+                      onChanged: _controller.setDraftAnchorStart,
+                    ),
+                    SwitchListTile(
+                      key: const Key('draft_aux_chip'),
+                      title: const Text('Đường phụ minh họa'),
+                      subtitle: const Text(
+                        'Đường chính nằm trong vùng tâm bi [r, W-r] × [r, H-r]',
+                      ),
+                      value: _controller.draftRole == PathRole.auxiliary,
+                      onChanged: (v) => _controller.setDraftRole(
+                        v ? PathRole.auxiliary : PathRole.ballCenter,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _showPathStyleSheet() {
-    if (_controller.selectedPath == null || _controller.isDraggingAny) return;
+    if (_controller.selectedPath == null || _controller.isEditingLocked) return;
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -447,7 +703,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Kiểu hiển thị đường',
+                      'Thuộc tính đường hướng dẫn',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                             fontWeight: FontWeight.bold,
                           ),
@@ -568,598 +824,674 @@ class _TableStageScreenState extends State<TableStageScreen> {
     );
   }
 
+  Offset _clampToolbarOffset(Offset raw, Size areaSize) {
+    const margin = 8.0;
+    final maxAllowedWidth = (areaSize.width - 72.0).clamp(120.0, 420.0);
+    final box = _toolbarKey.currentContext?.findRenderObject() as RenderBox?;
+    final fallbackWidth = _toolbarCollapsed
+        ? 100.0
+        : (380.0 > maxAllowedWidth ? maxAllowedWidth : 380.0);
+    final estWidth = box?.size.width ?? fallbackWidth;
+    final estHeight = box?.size.height ?? 52.0;
+
+    final maxX = (areaSize.width - estWidth - margin).clamp(margin, double.infinity);
+    final maxY = (areaSize.height - estHeight - margin).clamp(margin, double.infinity);
+
+    return Offset(
+      raw.dx.clamp(margin, maxX).toDouble(),
+      raw.dy.clamp(margin, maxY).toDouble(),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final isLandscape =
-        MediaQuery.sizeOf(context).width > MediaQuery.sizeOf(context).height;
-    final busy = _controller.isDraggingAny || _controller.isDrawingWithDraft;
+    final draggingOrLoading = _controller.isEditingLocked;
+    final warnings = _controller.invalidPathWarnings;
 
     return PopScope(
-      canPop: !_controller.isDraggingAny && !_controller.hasUnsavedChanges,
+      canPop: !draggingOrLoading && !_controller.hasUnsavedChanges,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && !_controller.isDraggingAny) {
+        if (!didPop && !draggingOrLoading) {
           _confirmDiscardAndExit();
         }
       },
       child: Scaffold(
-        appBar: AppBar(
-          titleSpacing: 0.0,
-          leading: IconButton(
-            tooltip: 'Quay lại',
-            icon: const Icon(Icons.arrow_back),
-            onPressed: _controller.isDraggingAny ? null : _confirmDiscardAndExit,
-          ),
-          title: const Text(
-            'Dựng thế bi',
-            style: TextStyle(fontSize: 18.0, fontWeight: FontWeight.w600),
-          ),
-          actions: [
-            IconButton(
-              key: const Key('undo_button'),
-              tooltip: 'Hoàn tác',
-              icon: const Icon(Icons.undo),
-              onPressed: _controller.canUndo ? _controller.undo : null,
-            ),
-            IconButton(
-              key: const Key('redo_button'),
-              tooltip: 'Làm lại',
-              icon: const Icon(Icons.redo),
-              onPressed: _controller.canRedo ? _controller.redo : null,
-            ),
-            IconButton(
-              key: const Key('save_scene_button'),
-              tooltip: 'Lưu sơ đồ',
-              icon: _controller.isSaving
-                  ? const SizedBox(
-                      width: 20.0,
-                      height: 20.0,
-                      child: CircularProgressIndicator(strokeWidth: 2.0),
-                    )
-                  : const Icon(Icons.save_outlined),
-              onPressed: (busy || _controller.isSaving) ? null : _saveScene,
-            ),
-            IconButton(
-              key: const Key('reset_button'),
-              tooltip: 'Đặt lại',
-              icon: const Icon(Icons.restart_alt),
-              onPressed: busy ? null : _controller.resetBalls,
-            ),
-            IconButton(
-              key: const Key('display_settings_button'),
-              tooltip: 'Hiển thị bàn',
-              icon: const Icon(Icons.tune),
-              onPressed: busy ? null : _showDisplaySettingsSheet,
-            ),
-          ],
-        ),
+        // Không co canvas khi bàn phím bật (tránh đổi kích thước canvas hoặc làm nhảy điểm đang kéo).
+        resizeToAvoidBottomInset: false,
         body: SafeArea(
-          child: Column(
-            children: [
-              if (_controller.isLoading)
-                const LinearProgressIndicator(minHeight: 2.0),
-              Expanded(
-                child: isLandscape
-                    ? _buildLandscapeBody(context)
-                    : _buildPortraitBody(context),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final areaSize = Size(
+                constraints.maxWidth,
+                constraints.maxHeight,
+              );
+              final maxAllowedWidth = (areaSize.width - 72.0).clamp(120.0, 420.0);
+              final defaultToolbarWidth = _toolbarCollapsed
+                  ? 100.0
+                  : (380.0 > maxAllowedWidth ? maxAllowedWidth : 380.0);
+              final initialOffset = Offset(
+                (areaSize.width - defaultToolbarWidth - 8.0)
+                    .clamp(8.0, double.infinity),
+                8.0,
+              );
+              final clampedToolbarOffset = _clampToolbarOffset(
+                _toolbarOffset ?? initialOffset,
+                areaSize,
+              );
 
-  Widget _buildPortraitBody(BuildContext context) {
-    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
-    return Column(
-      children: [
-        if (_controller.loadError != null)
-          MaterialBanner(
-            content: Text('Lỗi tải sơ đồ: ${_controller.loadError}'),
-            actions: [
-              TextButton(
-                onPressed: _controller.loadFromStorage,
-                child: const Text('Thử lại'),
-              ),
-            ],
-          ),
-        Expanded(
-          child: _buildTableArea(context),
-        ),
-        ConstrainedBox(
-          constraints: BoxConstraints(
-            maxHeight: keyboardOpen ? 210.0 : 300.0,
-          ),
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(12.0, 4.0, 12.0, 12.0),
-            child: _buildControlPanel(context, compact: keyboardOpen),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildLandscapeBody(BuildContext context) {
-    final totalWidth = MediaQuery.sizeOf(context).width;
-    final panelWidth = (totalWidth * 0.45).clamp(320.0, 430.0);
-    return Row(
-      children: [
-        Expanded(
-          child: _buildTableArea(context),
-        ),
-        SizedBox(
-          width: panelWidth,
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(12.0),
-            child: _buildControlPanel(context, compact: false),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildTableArea(BuildContext context) {
-    final invalidIds = _controller.invalidPathWarnings.keys.toSet();
-    return Padding(
-      padding: const EdgeInsets.all(8.0),
-      child: Center(
-        child: BilliardTableCanvas(
-          key: const Key('billiard_table_canvas'),
-          scene: _controller.scene,
-          toolMode: _controller.toolMode,
-          selectedBallId: _controller.selectedBallId,
-          selectedPathId: _controller.selectedPathId,
-          selectedVertexIndex: _controller.selectedVertexIndex,
-          invalidPathIds: invalidIds,
-          draftPoints: _controller.draftPoints,
-          draftOwnerBallId: _controller.draftOwnerBallId,
-          draftRole: _controller.draftRole,
-          snapSettings: _controller.snapSettings,
-          onBallTapped: _controller.selectBall,
-          onPathTapped: (pathId) => _controller.selectPath(pathId),
-          onBallDragStart: (ballId, touchPoint) {
-            if (_xFocus.hasFocus || _yFocus.hasFocus) {
-              _xFocus.unfocus();
-              _yFocus.unfocus();
-            }
-            return _controller.beginBallDrag(ballId, touchPoint: touchPoint);
-          },
-          onBallDragUpdateFromTouch: (touchPoint, dragToken) =>
-              _controller.updateBallDragFromTouch(
-            touchPoint,
-            dragToken: dragToken,
-          ),
-          onBallDragEnd: (dragToken) =>
-              _controller.endBallDrag(dragToken: dragToken),
-          onBallDragCancel: (dragToken) =>
-              _controller.cancelBallDrag(dragToken: dragToken),
-          onLockedBallTouched: (ball) {
-            _showSnack('${ball.color.label} đang bị khóa vị trí.');
-          },
-          onVertexDragStart: (pathId, vertexIndex, touchPoint) {
-            return _controller.beginVertexDrag(
-              pathId,
-              vertexIndex,
-              touchPoint: touchPoint,
-              onBlocked: _showSnack,
-            );
-          },
-          onVertexDragUpdateFromTouch: (touchPoint, dragToken) =>
-              _controller.updateVertexDragFromTouch(
-            touchPoint,
-            dragToken: dragToken,
-          ),
-          onVertexDragEnd: (dragToken) =>
-              _controller.endVertexDrag(dragToken: dragToken),
-          onVertexDragCancel: (dragToken) =>
-              _controller.cancelVertexDrag(dragToken: dragToken),
-          onDrawPointPlaced: _controller.addDraftPoint,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildControlPanel(BuildContext context, {required bool compact}) {
-    final dragging = _controller.isDraggingAny;
-    final warnings = _controller.invalidPathWarnings;
-    final selectedPath = _controller.selectedPath;
-
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (warnings.isNotEmpty) ...[
-              Container(
-                key: const Key('invalid_path_warning_banner'),
-                padding: const EdgeInsets.all(8.0),
-                margin: const EdgeInsets.only(bottom: 8.0),
-                decoration: BoxDecoration(
-                  color: Colors.orange.withValues(alpha: 0.16),
-                  borderRadius: BorderRadius.circular(8.0),
-                  border: Border.all(color: Colors.orangeAccent),
-                ),
-                child: Text(
-                  warnings.values.first,
-                  style: const TextStyle(
-                    fontSize: 12.0,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-            ],
-            // Thanh chuyển chế độ công cụ: Chọn / Di chuyển bi <-> Vẽ đường
-            if (!compact) ...[
-              Wrap(
-                spacing: 8.0,
-                runSpacing: 6.0,
-                crossAxisAlignment: WrapCrossAlignment.center,
+              return Stack(
                 children: [
-                  ChoiceChip(
-                    key: const Key('mode_select_chip'),
-                    avatar: const Icon(Icons.pan_tool_alt_outlined, size: 16.0),
-                    label: const Text('Chọn / Di chuyển'),
-                    selected: _controller.toolMode == EditorToolMode.select,
-                    onSelected: dragging
-                        ? null
-                        : (_) => _controller.setToolMode(EditorToolMode.select),
+                  // LỚP 0: Canvas toàn vùng giữ nguyên kích thước & tỉ lệ 1:2
+                  Positioned.fill(
+                    child: Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: AbsorbPointer(
+                        absorbing: _controller.isLoading || _isDraggingToolbar,
+                        child: BilliardTableCanvas(
+                          key: const Key('billiard_table_canvas'),
+                          scene: _controller.scene,
+                          toolMode: _controller.toolMode,
+                          selectedBallId: _controller.selectedBallId,
+                          selectedPathId: _controller.selectedPathId,
+                          selectedVertexIndex: _controller.selectedVertexIndex,
+                          invalidPathIds: warnings.keys.toSet(),
+                          draftPoints: _controller.draftPoints,
+                          draftOwnerBallId: _controller.draftOwnerBallId,
+                          draftRole: _controller.draftRole,
+                          snapSettings: _controller.snapSettings,
+                          onBallTapped: _controller.selectBall,
+                          onPathTapped: (pathId) =>
+                              _controller.selectPath(pathId),
+                          onBallDragStart: (ballId, touchPoint) {
+                            if (_xFocus.hasFocus || _yFocus.hasFocus) {
+                              _xFocus.unfocus();
+                              _yFocus.unfocus();
+                            }
+                            return _controller.beginBallDrag(
+                              ballId,
+                              touchPoint: touchPoint,
+                            );
+                          },
+                          onBallDragUpdateFromTouch:
+                              (touchPoint, dragToken) =>
+                                  _controller.updateBallDragFromTouch(
+                            touchPoint,
+                            dragToken: dragToken,
+                          ),
+                          onBallDragEnd: (dragToken) =>
+                              _controller.endBallDrag(dragToken: dragToken),
+                          onBallDragCancel: (dragToken) =>
+                              _controller.cancelBallDrag(dragToken: dragToken),
+                          onLockedBallTouched: (ball) {
+                            _showSnack('${ball.color.label} đang bị khóa vị trí.');
+                          },
+                          onVertexDragStart:
+                              (pathId, vertexIndex, touchPoint) {
+                            return _controller.beginVertexDrag(
+                              pathId,
+                              vertexIndex,
+                              touchPoint: touchPoint,
+                              onBlocked: _showSnack,
+                            );
+                          },
+                          onVertexDragUpdateFromTouch:
+                              (touchPoint, dragToken) =>
+                                  _controller.updateVertexDragFromTouch(
+                            touchPoint,
+                            dragToken: dragToken,
+                          ),
+                          onVertexDragEnd: (dragToken) =>
+                              _controller.endVertexDrag(dragToken: dragToken),
+                          onVertexDragCancel: (dragToken) =>
+                              _controller.cancelVertexDrag(dragToken: dragToken),
+                          onDrawPointPlaced: _controller.addDraftPoint,
+                        ),
+                      ),
+                    ),
                   ),
-                  ChoiceChip(
-                    key: const Key('mode_draw_chip'),
-                    avatar: const Icon(Icons.timeline, size: 16.0),
-                    label: const Text('Vẽ đường'),
-                    selected:
-                        _controller.toolMode == EditorToolMode.drawPolyline,
-                    onSelected: dragging
-                        ? null
-                        : (_) =>
-                            _controller.setToolMode(EditorToolMode.drawPolyline),
+
+                  // Thanh tiến trình mảnh khi đang tải từ kho
+                  if (_controller.isLoading)
+                    const Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: LinearProgressIndicator(minHeight: 3.0),
+                    ),
+
+                  // Nút Quay lại nổi gọn ở góc trên trái (chặn xuyên chạm xuống bàn)
+                  Positioned(
+                    top: 8.0,
+                    left: 8.0,
+                    child: _FloatingSurfaceBarrier(
+                      child: Material(
+                        elevation: 4.0,
+                        borderRadius: BorderRadius.circular(24.0),
+                        color: Theme.of(context).colorScheme.surface,
+                        child: IconButton(
+                          key: const Key('back_button'),
+                          tooltip: 'Quay lại',
+                          icon: const Icon(Icons.arrow_back),
+                          onPressed: draggingOrLoading
+                              ? null
+                              : _confirmDiscardAndExit,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // Cảnh báo lỗi đường (nếu có) hoặc lỗi tải
+                  if (warnings.isNotEmpty || _controller.loadError != null)
+                    Positioned(
+                      top: 64.0,
+                      left: 12.0,
+                      right: 12.0,
+                      child: _FloatingSurfaceBarrier(
+                        child: Center(
+                          child: Material(
+                            elevation: 4.0,
+                            borderRadius: BorderRadius.circular(12.0),
+                            color: Colors.orange.shade50,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12.0,
+                                vertical: 8.0,
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(
+                                    Icons.warning_amber_rounded,
+                                    color: Colors.deepOrange,
+                                    size: 18.0,
+                                  ),
+                                  const SizedBox(width: 8.0),
+                                  Flexible(
+                                    child: Text(
+                                      _controller.loadError != null
+                                          ? 'Lỗi tải sơ đồ: ${_controller.loadError}'
+                                          : warnings.values.first,
+                                      key: const Key(
+                                          'invalid_path_warning_banner'),
+                                      style: const TextStyle(
+                                        fontSize: 12.0,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  // LỚP NỔI 1: Thanh công cụ chính kéo được bằng tay nắm riêng
+                  Positioned(
+                    left: clampedToolbarOffset.dx,
+                    top: clampedToolbarOffset.dy,
+                    child: _FloatingSurfaceBarrier(
+                      child: _buildFloatingMainToolbar(
+                        context,
+                        areaSize,
+                        clampedToolbarOffset,
+                      ),
+                    ),
+                  ),
+
+                  // LỚP NỔI 2: Bảng thuộc tính gọn theo đối tượng đang chọn / đang vẽ
+                  Positioned(
+                    left: 8.0,
+                    right: 8.0,
+                    bottom: 8.0,
+                    child: Center(
+                      child: _FloatingSurfaceBarrier(
+                        child: _buildFloatingContextPanel(context),
+                      ),
+                    ),
                   ),
                 ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFloatingMainToolbar(
+    BuildContext context,
+    Size areaSize,
+    Offset currentOffset,
+  ) {
+    final dragging = _controller.isDraggingAny;
+    final loading = _controller.isLoading;
+    final busySave =
+        loading || dragging || _controller.isDrawingWithDraft || _controller.isSaving;
+
+    const btnConstraints = BoxConstraints(minWidth: 48.0, minHeight: 48.0);
+    final maxToolbarWidth = (areaSize.width - 72.0).clamp(120.0, 420.0);
+
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxToolbarWidth),
+      child: Material(
+        key: _toolbarKey,
+        elevation: 6.0,
+        borderRadius: BorderRadius.circular(28.0),
+        color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.96),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
+          child: Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              // Tay nắm riêng để kéo thanh công cụ nổi
+              GestureDetector(
+                key: const Key('floating_toolbar_drag_handle'),
+                behavior: HitTestBehavior.opaque,
+                onPanStart: (_) {
+                  if (_controller.isDraggingAny || _controller.isLoading) return;
+                  setState(() {
+                    _isDraggingToolbar = true;
+                    _toolbarOffset ??= currentOffset;
+                  });
+                },
+                onPanUpdate: (details) {
+                  if (!_isDraggingToolbar) return;
+                  setState(() {
+                    final next = (_toolbarOffset ?? currentOffset) + details.delta;
+                    _toolbarOffset = _clampToolbarOffset(next, areaSize);
+                  });
+                },
+                onPanEnd: (_) {
+                  if (_isDraggingToolbar) {
+                    setState(() => _isDraggingToolbar = false);
+                  }
+                },
+                onPanCancel: () {
+                  if (_isDraggingToolbar) {
+                    setState(() => _isDraggingToolbar = false);
+                  }
+                },
+                child: const SizedBox(
+                  width: 36.0,
+                  height: 48.0,
+                  child: Icon(Icons.drag_indicator, size: 20.0),
+                ),
               ),
-              const SizedBox(height: 8.0),
+
+              if (_toolbarCollapsed) ...[
+                Icon(
+                  _controller.toolMode == EditorToolMode.drawPolyline
+                      ? Icons.timeline
+                      : Icons.pan_tool_alt_outlined,
+                  size: 20.0,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 4.0),
+              ] else ...[
+                IconButton(
+                  key: const Key('mode_select_chip'),
+                  tooltip: 'Chọn / Di chuyển',
+                  constraints: btnConstraints,
+                  padding: EdgeInsets.zero,
+                  isSelected: _controller.toolMode == EditorToolMode.select,
+                  icon: const Icon(Icons.pan_tool_alt_outlined),
+                  onPressed:
+                      (dragging || loading) ? null : _switchToSelectMode,
+                ),
+                IconButton(
+                  key: const Key('mode_draw_chip'),
+                  tooltip: 'Vẽ đường',
+                  constraints: btnConstraints,
+                  padding: EdgeInsets.zero,
+                  isSelected:
+                      _controller.toolMode == EditorToolMode.drawPolyline,
+                  icon: const Icon(Icons.timeline),
+                  onPressed: (dragging || loading)
+                      ? null
+                      : () => _controller.setToolMode(EditorToolMode.drawPolyline),
+                ),
+                IconButton(
+                  key: const Key('undo_button'),
+                  tooltip: 'Hoàn tác',
+                  constraints: btnConstraints,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.undo),
+                  onPressed: _controller.canUndo ? _controller.undo : null,
+                ),
+                IconButton(
+                  key: const Key('redo_button'),
+                  tooltip: 'Làm lại',
+                  constraints: btnConstraints,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.redo),
+                  onPressed: _controller.canRedo ? _controller.redo : null,
+                ),
+                IconButton(
+                  key: const Key('save_scene_button'),
+                  tooltip: 'Lưu sơ đồ',
+                  constraints: btnConstraints,
+                  padding: EdgeInsets.zero,
+                  icon: _controller.isSaving
+                      ? const SizedBox(
+                          width: 18.0,
+                          height: 18.0,
+                          child: CircularProgressIndicator(strokeWidth: 2.0),
+                        )
+                      : Badge(
+                          isLabelVisible: _controller.hasUnsavedChanges,
+                          smallSize: 7.0,
+                          child: const Icon(Icons.save_outlined),
+                        ),
+                  onPressed: busySave ? null : _saveScene,
+                ),
+                PopupMenuButton<String>(
+                  key: const Key('more_menu_button'),
+                  tooltip: 'Menu thêm',
+                  padding: EdgeInsets.zero,
+                  constraints: btnConstraints,
+                  enabled: !dragging && !loading && !_controller.isDrawingWithDraft,
+                  onSelected: (value) {
+                    if (value == 'display') {
+                      _showDisplaySettingsSheet();
+                    } else if (value == 'reset') {
+                      _controller.resetBalls();
+                    } else if (value == 'reload') {
+                      _reloadScene();
+                    }
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(
+                      key: Key('menu_display_settings'),
+                      value: 'display',
+                      child: Text('Hiển thị & Bắt dính'),
+                    ),
+                    PopupMenuItem(
+                      key: Key('menu_reset_balls'),
+                      value: 'reset',
+                      child: Text('Đặt lại vị trí bi'),
+                    ),
+                    PopupMenuItem(
+                      key: Key('menu_reload_scene'),
+                      value: 'reload',
+                      child: Text('Tải lại từ máy'),
+                    ),
+                  ],
+                ),
+              ],
+
+              IconButton(
+                key: const Key('floating_toolbar_collapse_button'),
+                tooltip: _toolbarCollapsed ? 'Mở rộng công cụ' : 'Thu gọn công cụ',
+                constraints: btnConstraints,
+                padding: EdgeInsets.zero,
+                icon: Icon(
+                  _toolbarCollapsed ? Icons.unfold_more : Icons.unfold_less,
+                ),
+                onPressed: () {
+                  setState(() {
+                    _toolbarCollapsed = !_toolbarCollapsed;
+                  });
+                },
+              ),
             ],
-            if (_controller.toolMode == EditorToolMode.drawPolyline)
-              _buildDrawPolylinePanel(context)
-            else if (selectedPath != null && !compact)
-              _buildSelectedPathPanel(context, selectedPath)
-            else
-              _buildBallControlPanel(context, compact: compact),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFloatingContextPanel(BuildContext context) {
+    if (_controller.toolMode == EditorToolMode.drawPolyline) {
+      return _buildFloatingDrawPanel(context);
+    }
+    final selectedPath = _controller.selectedPath;
+    if (selectedPath != null) {
+      return _buildFloatingPathPanel(context, selectedPath);
+    }
+    return _buildFloatingBallPanel(context);
+  }
+
+  Widget _buildFloatingDrawPanel(BuildContext context) {
+    final pointCount = _controller.draftPoints.length;
+    final locked = _controller.isEditingLocked;
+
+    return Material(
+      key: const Key('floating_draw_panel'),
+      elevation: 6.0,
+      borderRadius: BorderRadius.circular(24.0),
+      color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.96),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final b in _controller.balls) ...[
+              ChoiceChip(
+                key: Key('draw_owner_${b.id}'),
+                avatar: _BallDot(color: b.color),
+                label: Text(b.label.isNotEmpty ? b.label : b.color.label),
+                selected: _controller.draftOwnerBallId == b.id,
+                onSelected: locked
+                    ? null
+                    : (_) => _controller.setDraftOwnerBall(b.id),
+              ),
+              const SizedBox(width: 4.0),
+            ],
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6.0),
+              child: Text(
+                '$pointCount điểm',
+                key: const Key('draft_point_count_badge'),
+                style: Theme.of(context)
+                    .textTheme
+                    .labelMedium
+                    ?.copyWith(fontWeight: FontWeight.w600),
+              ),
+            ),
+            IconButton(
+              key: const Key('undo_draft_point_button'),
+              tooltip: 'Lùi 1 điểm',
+              icon: const Icon(Icons.backspace_outlined),
+              onPressed:
+                  (!locked && pointCount > 0) ? _controller.undoDraftPoint : null,
+            ),
+            IconButton(
+              key: const Key('draw_options_button'),
+              tooltip: 'Tùy chọn đường',
+              icon: const Icon(Icons.tune),
+              onPressed: locked ? null : _showDrawOptionsSheet,
+            ),
+            OutlinedButton(
+              key: const Key('cancel_draft_path_button'),
+              onPressed: locked ? null : _controller.cancelDraftPath,
+              child: const Text('Hủy'),
+            ),
+            const SizedBox(width: 6.0),
+            FilledButton(
+              key: const Key('complete_draft_path_button'),
+              onPressed: (!locked && _controller.canCompleteDraft)
+                  ? () {
+                      final err = _controller.completeDraftPath();
+                      if (err != null) _showSnack(err);
+                    }
+                  : null,
+              child: const Text('Hoàn tất'),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildDrawPolylinePanel(BuildContext context) {
-    final pointCount = _controller.draftPoints.length;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Wrap(
-          spacing: 6.0,
-          runSpacing: 6.0,
-          children: [
-            for (final ball in _controller.balls)
-              ChoiceChip(
-                key: Key('draw_owner_${ball.id}'),
-                avatar: _BallDot(color: ball.color),
-                label: Text(ball.color.label),
-                selected: _controller.draftOwnerBallId == ball.id,
-                onSelected: (_) => _controller.setDraftOwnerBall(ball.id),
-              ),
-          ],
-        ),
-        const SizedBox(height: 8.0),
-        Wrap(
-          spacing: 6.0,
-          runSpacing: 6.0,
-          children: [
-            FilterChip(
-              key: const Key('draft_anchor_chip'),
-              label: const Text('Gắn điểm đầu với bi'),
-              selected: _controller.draftAnchorStart,
-              onSelected: _controller.setDraftAnchorStart,
-            ),
-            FilterChip(
-              key: const Key('draft_aux_chip'),
-              label: const Text('Đường phụ'),
-              selected: _controller.draftRole == PathRole.auxiliary,
-              onSelected: (v) => _controller.setDraftRole(
-                v ? PathRole.auxiliary : PathRole.ballCenter,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8.0),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                key: const Key('undo_draft_point_button'),
-                onPressed:
-                    pointCount > 0 ? _controller.undoDraftPoint : null,
-                icon: const Icon(Icons.backspace_outlined, size: 18.0),
-                label: Text('Lùi ($pointCount)'),
-              ),
-            ),
-            const SizedBox(width: 8.0),
-            Expanded(
-              child: OutlinedButton(
-                key: const Key('cancel_draft_path_button'),
-                onPressed: _controller.cancelDraftPath,
-                child: const Text('Hủy đường'),
-              ),
-            ),
-            const SizedBox(width: 8.0),
-            Expanded(
-              child: FilledButton(
-                key: const Key('complete_draft_path_button'),
-                onPressed: _controller.canCompleteDraft
-                    ? () {
-                        final err = _controller.completeDraftPath();
-                        if (err != null) _showSnack(err);
-                      }
-                    : null,
-                child: const Text('Hoàn tất'),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSelectedPathPanel(BuildContext context, GuidePath path) {
-    final dragging = _controller.isDraggingAny;
-    final vertices = PathGeometry.extractVertices(path);
-    final ownerBall = _controller.balls
-        .where((b) => b.id == path.ownerBallId)
-        .firstOrNull;
+  Widget _buildFloatingPathPanel(BuildContext context, GuidePath path) {
+    final locked = _controller.isEditingLocked;
     final isAnchored = path.startAnchorBallId != null;
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
+    return Material(
+      key: const Key('floating_path_panel'),
+      elevation: 6.0,
+      borderRadius: BorderRadius.circular(24.0),
+      color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.96),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            if (ownerBall != null) ...[
-              _BallDot(color: ownerBall.color),
-              const SizedBox(width: 6.0),
-            ],
-            Expanded(
-              child: Text(
-                '${path.role.label} • ${vertices.length} điểm',
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
-            ),
-            TextButton(
-              onPressed:
-                  dragging ? null : () => _controller.selectPath(null),
-              child: const Text('Xong'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 6.0),
-        Wrap(
-          spacing: 6.0,
-          runSpacing: 6.0,
-          children: [
-            FilterChip(
-              key: const Key('toggle_anchor_button'),
-              label: Text(
-                isAnchored ? 'Đang gắn tâm bi' : 'Gắn điểm đầu với bi',
-              ),
-              selected: isAnchored,
-              onSelected: dragging
-                  ? null
-                  : (_) => _controller.toggleSelectedPathStartAnchor(),
-            ),
             ActionChip(
               key: const Key('insert_vertex_button'),
               avatar: const Icon(Icons.add_circle_outline, size: 16.0),
               label: const Text('Chèn điểm'),
-              onPressed: dragging
-                  ? null
-                  : () => _controller.insertVertexOnSelectedPath(),
+              onPressed:
+                  locked ? null : () => _controller.insertVertexOnSelectedPath(),
             ),
+            const SizedBox(width: 6.0),
             ActionChip(
               key: const Key('delete_vertex_button'),
               avatar: const Icon(Icons.remove_circle_outline, size: 16.0),
               label: const Text('Xóa điểm'),
-              onPressed: dragging
+              onPressed: locked
                   ? null
                   : () {
                       final err = _controller.deleteSelectedVertex();
                       if (err != null) _showSnack(err);
                     },
             ),
+            const SizedBox(width: 6.0),
             ActionChip(
               key: const Key('reverse_path_button'),
               avatar: const Icon(Icons.swap_horiz, size: 16.0),
               label: const Text('Đảo chiều'),
-              onPressed:
-                  dragging ? null : _controller.reverseSelectedPath,
+              onPressed: locked ? null : _controller.reverseSelectedPath,
             ),
+            const SizedBox(width: 6.0),
+            FilterChip(
+              key: const Key('toggle_anchor_button'),
+              label: Text(isAnchored ? 'Đang gắn bi' : 'Gắn bi'),
+              selected: isAnchored,
+              onSelected: locked
+                  ? null
+                  : (_) => _controller.toggleSelectedPathStartAnchor(),
+            ),
+            const SizedBox(width: 6.0),
             ActionChip(
               key: const Key('path_style_button'),
               avatar: const Icon(Icons.palette_outlined, size: 16.0),
               label: const Text('Kiểu nét'),
-              onPressed: dragging ? null : _showPathStyleSheet,
+              onPressed: locked ? null : _showPathStyleSheet,
             ),
+            const SizedBox(width: 6.0),
             ActionChip(
               key: const Key('delete_path_button'),
               avatar: const Icon(Icons.delete_outline, size: 16.0),
               label: const Text('Xóa đường'),
-              onPressed:
-                  dragging ? null : _controller.deleteSelectedPath,
+              onPressed: locked ? null : _controller.deleteSelectedPath,
+            ),
+            const SizedBox(width: 4.0),
+            IconButton(
+              tooltip: 'Đóng chọn đường',
+              icon: const Icon(Icons.close),
+              onPressed: locked ? null : () => _controller.selectPath(null),
             ),
           ],
         ),
-      ],
+      ),
     );
   }
 
-  Widget _buildBallControlPanel(BuildContext context, {required bool compact}) {
+  Widget _buildFloatingBallPanel(BuildContext context) {
     final selected = _controller.selectedBall;
-    final view = _controller.viewSettings;
-    final r = selected?.radius ?? TableConstants.defaultBallRadius;
-    final dragging = _controller.isDraggingAny;
+    final locked = _controller.isEditingLocked;
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Wrap(
-          spacing: 6.0,
-          runSpacing: 6.0,
+    return Material(
+      key: const Key('floating_ball_panel'),
+      elevation: 6.0,
+      borderRadius: BorderRadius.circular(24.0),
+      color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.96),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 4.0),
+        child: Wrap(
+          alignment: WrapAlignment.center,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 4.0,
+          runSpacing: 4.0,
           children: [
             for (final ball in _controller.balls)
               ChoiceChip(
                 key: Key('select_${ball.id}'),
-                avatar: _BallDot(color: ball.color),
+                showCheckmark: false,
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.padded,
+                padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                labelPadding: const EdgeInsets.symmetric(horizontal: 4.0),
                 label: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(ball.color.label),
+                    _BallDot(color: ball.color),
+                    const SizedBox(width: 4.0),
+                    Text(
+                      switch (ball.color) {
+                        BallColor.white => 'Trắng',
+                        BallColor.yellow => 'Vàng',
+                        BallColor.red => 'Đỏ',
+                      },
+                    ),
                     if (ball.locked) ...[
-                      const SizedBox(width: 4.0),
-                      const Icon(Icons.lock, size: 14.0),
+                      const SizedBox(width: 2.0),
+                      const Icon(Icons.lock, size: 12.0),
                     ],
                   ],
                 ),
                 selected: ball.id == _controller.selectedBallId,
-                onSelected: dragging
-                    ? null
-                    : (_) => _controller.selectBall(ball.id),
+                onSelected:
+                    locked ? null : (_) => _controller.selectBall(ball.id),
               ),
-          ],
-        ),
-        const SizedBox(height: 8.0),
-        if (selected != null) ...[
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  key: const Key('coord_x_input'),
-                  controller: _xController,
-                  focusNode: _xFocus,
-                  enabled: !selected.locked && !dragging,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                    signed: true,
-                  ),
-                  decoration: InputDecoration(
-                    labelText:
-                        'X (${r.toStringAsFixed(0)}..${(TableConstants.playfieldWidth - r).toStringAsFixed(0)})',
-                    isDense: true,
-                    border: const OutlineInputBorder(),
-                  ),
-                  onChanged: (value) {
-                    _xDirty = value != _syncedXText;
-                  },
-                  onSubmitted: (_) => _applyManualCoordinates(),
-                ),
-              ),
-              const SizedBox(width: 8.0),
-              Expanded(
-                child: TextField(
-                  key: const Key('coord_y_input'),
-                  controller: _yController,
-                  focusNode: _yFocus,
-                  enabled: !selected.locked && !dragging,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                    signed: true,
-                  ),
-                  decoration: InputDecoration(
-                    labelText:
-                        'Y (${r.toStringAsFixed(0)}..${(TableConstants.playfieldHeight - r).toStringAsFixed(0)})',
-                    isDense: true,
-                    border: const OutlineInputBorder(),
-                  ),
-                  onChanged: (value) {
-                    _yDirty = value != _syncedYText;
-                  },
-                  onSubmitted: (_) => _applyManualCoordinates(),
-                ),
-              ),
-              const SizedBox(width: 8.0),
-              SizedBox(
-                height: 48.0,
-                child: FilledButton(
-                  key: const Key('apply_coords_button'),
-                  onPressed: (selected.locked || dragging)
-                      ? null
-                      : _applyManualCoordinates,
-                  child: const Text('Đặt'),
-                ),
-              ),
-              const SizedBox(width: 4.0),
+            if (selected != null) ...[
               IconButton.filledTonal(
                 key: const Key('lock_ball_button'),
                 tooltip: selected.locked ? 'Mở khóa bi' : 'Khóa bi',
                 icon: Icon(selected.locked ? Icons.lock : Icons.lock_open),
-                onPressed: dragging
+                onPressed: locked
                     ? null
                     : () => _controller.toggleBallLock(selected.id),
               ),
-            ],
-          ),
-          if (_coordinateError != null) ...[
-            const SizedBox(height: 6.0),
-            Text(
-              _coordinateError!,
-              key: const Key('coordinate_error_text'),
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.error,
-                fontSize: 12.0,
-                fontWeight: FontWeight.w500,
+              OutlinedButton.icon(
+                key: const Key('open_xy_button'),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 10.0),
+                  minimumSize: const Size(48.0, 48.0),
+                ),
+                onPressed: locked ? null : _openCoordinateEditorSheet,
+                icon: const Icon(Icons.my_location, size: 16.0),
+                label: Text(
+                  '${_formatCoord(selected.center.x)}, ${_formatCoord(selected.center.y)}',
+                ),
               ),
-            ),
+            ],
           ],
-        ],
-        if (!compact) ...[
-          const SizedBox(height: 8.0),
-          Wrap(
-            spacing: 6.0,
-            runSpacing: 6.0,
-            children: [
-              FilterChip(
-                key: const Key('toggle_grid_chip'),
-                label: const Text('Lưới'),
-                selected: view.showGrid,
-                onSelected: (v) => _controller.updateViewSettings(
-                  view.copyWith(showGrid: v),
-                ),
-              ),
-              FilterChip(
-                key: const Key('toggle_diamonds_chip'),
-                label: const Text('Diamond'),
-                selected: view.showDiamonds,
-                onSelected: (v) => _controller.updateViewSettings(
-                  view.copyWith(showDiamonds: v),
-                ),
-              ),
-              FilterChip(
-                key: const Key('toggle_diamond_numbers_chip'),
-                label: const Text('Số diamond'),
-                selected: view.showDiamondNumbers,
-                onSelected: (v) => _controller.updateViewSettings(
-                  view.copyWith(showDiamondNumbers: v),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Lớp chắn pointer giúp thao tác chạm/kéo trên công cụ nổi không xuyên xuống bàn bên dưới.
+class _FloatingSurfaceBarrier extends StatelessWidget {
+  final Widget child;
+
+  const _FloatingSurfaceBarrier({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: (_) {},
+      onPointerMove: (_) {},
+      onPointerUp: (_) {},
+      child: child,
     );
   }
 }

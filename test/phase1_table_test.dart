@@ -403,6 +403,9 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      await tester.tap(find.byKey(const Key('open_xy_button')));
+      await tester.pumpAndSettle();
+
       await tester.enterText(find.byKey(const Key('coord_x_input')), 'NaN');
       await tester.tap(find.byKey(const Key('apply_coords_button')));
       await tester.pumpAndSettle();
@@ -415,12 +418,12 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('chồng'), findsOneWidget);
 
-      // Nhập tọa độ hợp lệ
+      // Nhập tọa độ hợp lệ (tự đóng sheet khi Đặt thành công)
       await tester.enterText(find.byKey(const Key('coord_x_input')), '120');
       await tester.enterText(find.byKey(const Key('coord_y_input')), '120');
       await tester.tap(find.byKey(const Key('apply_coords_button')));
       await tester.pumpAndSettle();
-      expect(find.byKey(const Key('coordinate_error_text')), findsNothing);
+      expect(find.byKey(const Key('xy_editor_sheet')), findsNothing);
       expect(
         controller.balls.first.center,
         const DiagramPoint(120.0, 120.0),
@@ -633,19 +636,20 @@ void main() {
         isNull,
       );
       expect(
-        tester.widget<IconButton>(find.byKey(const Key('reset_button'))).onPressed,
-        isNull,
+        tester.widget<PopupMenuButton<String>>(find.byKey(const Key('more_menu_button'))).enabled,
+        isFalse,
       );
       expect(
         tester.widget<IconButton>(find.byKey(const Key('lock_ball_button'))).onPressed,
         isNull,
       );
 
-      // Ngón 2 thử chạm trực tiếp vào nút Đặt lại và Khóa bi trên toolbar
-      final resetCenter = tester.getCenter(find.byKey(const Key('reset_button')));
-      final finger2Reset = await tester.startGesture(resetCenter);
-      await finger2Reset.up();
+      // Ngón 2 thử chạm trực tiếp vào nút Menu thêm và Khóa bi trên toolbar nổi
+      final moreCenter = tester.getCenter(find.byKey(const Key('more_menu_button')));
+      final finger2More = await tester.startGesture(moreCenter);
+      await finger2More.up();
       await tester.pump();
+      expect(find.byKey(const Key('menu_reset_balls')), findsNothing);
 
       final lockCenter = tester.getCenter(find.byKey(const Key('lock_ball_button')));
       final finger2Lock = await tester.startGesture(lockCenter);
@@ -701,6 +705,8 @@ void main() {
       await tester.pumpAndSettle();
 
       // Bấm Đặt khi không sửa X/Y -> không di chuyển bi, không tạo Undo
+      await tester.tap(find.byKey(const Key('open_xy_button')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('apply_coords_button')));
       await tester.pumpAndSettle();
       expect(
@@ -710,6 +716,8 @@ void main() {
       expect(controller.canUndo, isFalse);
 
       // Chỉ sửa X -> Y giữ nguyên đúng giá trị thật 110.0416 (không bị chuỗi làm tròn ghi đè)
+      await tester.tap(find.byKey(const Key('open_xy_button')));
+      await tester.pumpAndSettle();
       await tester.enterText(find.byKey(const Key('coord_x_input')), '120.25');
       await tester.tap(find.byKey(const Key('apply_coords_button')));
       await tester.pumpAndSettle();
@@ -752,13 +760,19 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      await tester.tap(find.byKey(const Key('open_xy_button')));
+      await tester.pumpAndSettle();
       final xField = tester.widget<TextField>(find.byKey(const Key('coord_x_input')));
       final yField = tester.widget<TextField>(find.byKey(const Key('coord_y_input')));
       expect(xField.controller?.text, '94.04');
       expect(yField.controller?.text, '110.04');
+      await tester.tap(find.byKey(const Key('apply_coords_button')));
+      await tester.pumpAndSettle();
 
       // Chọn bi vàng và đặt vừa tiếp xúc bi trắng tại (94.04, 118.04) (khoảng cách = 8.0 = 2r)
       await tester.tap(find.byKey(const Key('select_ball_yellow')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('open_xy_button')));
       await tester.pumpAndSettle();
 
       await tester.enterText(find.byKey(const Key('coord_x_input')), '94.04');
@@ -766,11 +780,13 @@ void main() {
       await tester.tap(find.byKey(const Key('apply_coords_button')));
       await tester.pumpAndSettle();
 
-      expect(find.byKey(const Key('coordinate_error_text')), findsNothing);
+      expect(find.byKey(const Key('xy_editor_sheet')), findsNothing);
       final yellow = controller.balls.firstWhere((b) => b.id == 'ball_yellow');
       expect(yellow.center, const DiagramPoint(94.04, 118.04));
 
       // Thử lấn vào 0.01 -> chồng bi -> phải từ chối
+      await tester.tap(find.byKey(const Key('open_xy_button')));
+      await tester.pumpAndSettle();
       await tester.enterText(find.byKey(const Key('coord_y_input')), '118.03');
       await tester.tap(find.byKey(const Key('apply_coords_button')));
       await tester.pumpAndSettle();
@@ -790,13 +806,17 @@ void main() {
       await tester.pumpAndSettle();
 
       // Bước 1: Đặt bi trắng tới (120, 120)
+      await tester.tap(find.byKey(const Key('open_xy_button')));
+      await tester.pumpAndSettle();
       await tester.enterText(find.byKey(const Key('coord_x_input')), '120');
       await tester.enterText(find.byKey(const Key('coord_y_input')), '120');
       await tester.tap(find.byKey(const Key('apply_coords_button')));
       await tester.pumpAndSettle();
       expect(controller.balls.first.center, const DiagramPoint(120, 120));
 
-      // Bước 2: Đang có focus ở ô X và nhập dở "175" (chưa bấm Đặt)
+      // Bước 2: Mở lại X/Y, đang có focus ở ô X và nhập dở "175" (chưa bấm Đặt)
+      await tester.tap(find.byKey(const Key('open_xy_button')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('coord_x_input')));
       await tester.pump();
       await tester.enterText(find.byKey(const Key('coord_x_input')), '175');
@@ -806,8 +826,8 @@ void main() {
         isTrue,
       );
 
-      // Bước 3: Bấm Hoàn tác (Undo) -> về (94, 94), xả focus và xóa nháp "175"
-      await tester.tap(find.byKey(const Key('undo_button')));
+      // Bước 3: Hoàn tác (Undo) -> về (94, 94), xả focus và xóa nháp "175"
+      controller.undo();
       await tester.pumpAndSettle();
       expect(controller.balls.first.center, const DiagramPoint(94, 94));
       expect(
@@ -815,17 +835,19 @@ void main() {
         '94',
       );
 
-      // Bấm Đặt ngay sau Undo không làm giá trị cũ "175" âm thầm áp dụng
+      // Bấm Đặt ngay sau Undo không làm giá trị cũ "175" âm thầm áp dụng (và đóng sheet)
       await tester.tap(find.byKey(const Key('apply_coords_button')));
       await tester.pumpAndSettle();
       expect(controller.balls.first.center, const DiagramPoint(94, 94));
       expect(controller.canRedo, isTrue);
 
-      // Bước 4: Bấm Làm lại (Redo) -> về (120, 120) rồi nhập tiếp X = 135 (Y giữ 120)
+      // Bước 4: Bấm Làm lại (Redo) -> về (120, 120) rồi mở X/Y nhập tiếp X = 135 (Y giữ 120)
       await tester.tap(find.byKey(const Key('redo_button')));
       await tester.pumpAndSettle();
       expect(controller.balls.first.center, const DiagramPoint(120, 120));
 
+      await tester.tap(find.byKey(const Key('open_xy_button')));
+      await tester.pumpAndSettle();
       await tester.enterText(find.byKey(const Key('coord_x_input')), '135');
       await tester.tap(find.byKey(const Key('apply_coords_button')));
       await tester.pumpAndSettle();
@@ -838,6 +860,9 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(home: TableStageScreen(controller: controller)),
       );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('open_xy_button')));
       await tester.pumpAndSettle();
 
       await tester.enterText(find.byKey(const Key('coord_x_input')), 'Infinity');

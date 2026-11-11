@@ -13,10 +13,42 @@ enum EditorToolMode {
   final String label;
 }
 
+enum SaveStatus {
+  savedAll,
+  savedSnapshotWithNewerEdits,
+  rejectedBusy,
+  error,
+}
+
+class SaveOutcome {
+  final SaveStatus status;
+  final String message;
+
+  const SaveOutcome(this.status, this.message);
+
+  bool get isSuccess =>
+      status == SaveStatus.savedAll ||
+      status == SaveStatus.savedSnapshotWithNewerEdits;
+}
+
+enum LoadStatus {
+  loaded,
+  needsConfirmation,
+  rejectedBusy,
+  error,
+}
+
+class LoadOutcome {
+  final LoadStatus status;
+  final String? message;
+
+  const LoadOutcome(this.status, [this.message]);
+}
+
 /// Quản lý trạng thái màn hình Dựng thế bi (Phase 1 + Phase 2):
 /// - Hỗ trợ hai chế độ: Chọn/Di chuyển bi & chỉnh đường vs Vẽ đường thẳng/gấp khúc.
-/// - Bảo vệ giao dịch kéo (cho cả kéo bi và kéo điểm điều khiển đường) bằng `dragToken`.
-/// - Lưu/tải một sơ đồ nguyên tử qua `SceneStorage` (chỉ báo thành công sau khi ghi xong).
+/// - Bảo vệ giao dịch kéo bằng `dragToken` và khóa sửa trong lúc đang tải từ kho.
+/// - `saveToStorage` chụp snapshot trước khi `await` để phân biệt chỉnh sửa phát sinh sau snapshot.
 class TableEditorController extends ChangeNotifier {
   static const int _maxHistory = 100;
 
@@ -31,7 +63,6 @@ class TableEditorController extends ChangeNotifier {
   EditorToolMode _toolMode = EditorToolMode.select;
   SnapSettings _snapSettings = const SnapSettings();
 
-  // Trạng thái vẽ đường gấp khúc đang dựng dở (chưa Hoàn tất)
   String _draftOwnerBallId = 'ball_white';
   PathRole _draftRole = PathRole.ballCenter;
   bool _draftAnchorStart = false;
@@ -43,14 +74,12 @@ class TableEditorController extends ChangeNotifier {
   int _nextDragToken = 1;
   int _nextPathCounter = 1;
 
-  // Giao dịch kéo bi
   int? _activeDragToken;
   String? _draggingBallId;
   DiagramScene? _dragStartSceneSnapshot;
   DiagramPoint? _dragStartCenter;
   DiagramPoint _dragFingerOffset = const DiagramPoint(0.0, 0.0);
 
-  // Giao dịch kéo điểm điều khiển của đường
   int? _activeVertexDragToken;
   String? _draggingVertexPathId;
   int? _draggingVertexIndex;
@@ -60,7 +89,7 @@ class TableEditorController extends ChangeNotifier {
 
   int _authoritativeRevision = 0;
 
-  // Trạng thái lưu/tải sơ đồ
+  bool _isDisposed = false;
   bool _isLoading = false;
   bool _isSaving = false;
   String? _loadError;
@@ -79,6 +108,18 @@ class TableEditorController extends ChangeNotifier {
                 : null {
     _draftOwnerBallId = _selectedBallId ?? 'ball_white';
     _syncPathCounterWithScene(_scene);
+  }
+
+  @override
+  void dispose() {
+    _isDisposed = true;
+    super.dispose();
+  }
+
+  void _safeNotify() {
+    if (!_isDisposed) {
+      notifyListeners();
+    }
   }
 
   DiagramScene get scene => _scene;
@@ -104,6 +145,7 @@ class TableEditorController extends ChangeNotifier {
   bool get isDraggingAny => isDraggingBall || isDraggingVertex;
   bool get isDrawingWithDraft =>
       _toolMode == EditorToolMode.drawPolyline && _draftPoints.isNotEmpty;
+  bool get isEditingLocked => _isLoading || isDraggingAny;
 
   int? get activeDragToken => _activeDragToken;
   int? get activeVertexDragToken => _activeVertexDragToken;
@@ -115,11 +157,16 @@ class TableEditorController extends ChangeNotifier {
   String? get saveError => _saveError;
 
   bool get canUndo =>
-      !isDraggingAny && !isDrawingWithDraft && _undoStack.isNotEmpty;
+      !_isLoading &&
+      !isDraggingAny &&
+      !isDrawingWithDraft &&
+      _undoStack.isNotEmpty;
   bool get canRedo =>
-      !isDraggingAny && !isDrawingWithDraft && _redoStack.isNotEmpty;
+      !_isLoading &&
+      !isDraggingAny &&
+      !isDrawingWithDraft &&
+      _redoStack.isNotEmpty;
 
-  /// Có thay đổi chưa lưu so với bản đã lưu (hoặc mặc định ban đầu).
   bool get hasUnsavedChanges => _scene != _savedBaseline || isDrawingWithDraft;
 
   double get currentBallRadius =>
@@ -141,8 +188,6 @@ class TableEditorController extends ChangeNotifier {
     return null;
   }
 
-  /// Danh sách đường đang bị lỗi hình học (ví dụ vượt giới hạn sau khi đổi bán kính
-  /// hoặc đoạn độ dài 0 sau khi kéo bi có liên kết).
   Map<String, String> get invalidPathWarnings {
     final map = <String, String>{};
     for (final path in _scene.paths) {
@@ -198,12 +243,13 @@ class TableEditorController extends ChangeNotifier {
   // Chế độ công cụ & bắt dính
   // ---------------------------------------------------------------------------
 
+  /// Đổi chế độ công cụ. Không cho phép rời chế độ vẽ khi đang còn đường nháp;
+  /// người dùng phải Hoàn tất hoặc Hủy đường nháp trước.
   bool setToolMode(EditorToolMode mode) {
-    if (isDraggingAny) return false;
+    if (isEditingLocked) return false;
     if (_toolMode == mode) return true;
-    if (_toolMode == EditorToolMode.drawPolyline &&
-        mode != EditorToolMode.drawPolyline) {
-      _draftPoints.clear();
+    if (isDrawingWithDraft && mode != EditorToolMode.drawPolyline) {
+      return false;
     }
     _toolMode = mode;
     if (mode == EditorToolMode.drawPolyline) {
@@ -213,20 +259,20 @@ class TableEditorController extends ChangeNotifier {
         _draftOwnerBallId = _selectedBallId!;
       }
     }
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
   void updateSnapSettings(SnapSettings settings) {
-    if (_snapSettings == settings) return;
+    if (_isLoading || _snapSettings == settings) return;
     _snapSettings = settings;
-    notifyListeners();
+    _safeNotify();
   }
 
   void updateViewSettings(SceneViewSettings settings) {
-    if (_scene.viewSettings == settings) return;
+    if (_isLoading || _scene.viewSettings == settings) return;
     _scene = _scene.copyWith(viewSettings: settings);
-    notifyListeners();
+    _safeNotify();
   }
 
   // ---------------------------------------------------------------------------
@@ -234,22 +280,22 @@ class TableEditorController extends ChangeNotifier {
   // ---------------------------------------------------------------------------
 
   bool selectBall(String? ballId) {
-    if (isDraggingAny) return false;
+    if (isEditingLocked) return false;
     _selectedBallId = ballId;
     if (ballId != null) {
       _selectedPathId = null;
       _selectedVertexIndex = null;
       _draftOwnerBallId = ballId;
     }
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
   bool selectPath(String? pathId, {int? vertexIndex}) {
-    if (isDraggingAny) return false;
+    if (isEditingLocked) return false;
     _selectedPathId = pathId;
     _selectedVertexIndex = vertexIndex;
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
@@ -258,24 +304,24 @@ class TableEditorController extends ChangeNotifier {
   // ---------------------------------------------------------------------------
 
   void setDraftOwnerBall(String ballId) {
-    if (isDraggingAny) return;
+    if (isEditingLocked) return;
     final ball = _findBall(ballId);
     if (ball == null) return;
     _draftOwnerBallId = ballId;
     if (_draftAnchorStart && _draftPoints.isNotEmpty) {
       _draftPoints[0] = ball.center;
     }
-    notifyListeners();
+    _safeNotify();
   }
 
   void setDraftRole(PathRole role) {
-    if (isDraggingAny) return;
+    if (isEditingLocked) return;
     _draftRole = role;
-    notifyListeners();
+    _safeNotify();
   }
 
   void setDraftAnchorStart(bool anchor) {
-    if (isDraggingAny) return;
+    if (isEditingLocked) return;
     _draftAnchorStart = anchor;
     if (anchor) {
       final owner = _findBall(_draftOwnerBallId);
@@ -287,12 +333,13 @@ class TableEditorController extends ChangeNotifier {
         }
       }
     }
-    notifyListeners();
+    _safeNotify();
   }
 
-  /// Đặt một điểm mới khi đang ở chế độ Vẽ đường thẳng / Gấp khúc.
   DiagramPoint? addDraftPoint(DiagramPoint rawPoint) {
-    if (isDraggingAny || _toolMode != EditorToolMode.drawPolyline) return null;
+    if (isEditingLocked || _toolMode != EditorToolMode.drawPolyline) {
+      return null;
+    }
     if (!rawPoint.isFinite) return null;
 
     final owner = _findBall(_draftOwnerBallId);
@@ -312,24 +359,27 @@ class TableEditorController extends ChangeNotifier {
     }
 
     _draftPoints.add(snapped);
-    notifyListeners();
+    _safeNotify();
     return snapped;
   }
 
   void undoDraftPoint() {
-    if (_draftPoints.isEmpty) return;
+    if (isEditingLocked || _draftPoints.isEmpty) return;
     _draftPoints.removeLast();
-    notifyListeners();
+    _safeNotify();
   }
 
   void cancelDraftPath() {
+    if (isEditingLocked) return;
     _draftPoints.clear();
     _toolMode = EditorToolMode.select;
-    notifyListeners();
+    _safeNotify();
   }
 
-  /// Hoàn tất đường đang vẽ và đưa vào scene như một bước Undo duy nhất.
   String? completeDraftPath() {
+    if (_isLoading) {
+      return 'Đang tải dữ liệu, vui lòng chờ.';
+    }
     if (isDraggingAny) {
       return 'Hãy hoàn tất thao tác kéo hiện tại trước.';
     }
@@ -362,16 +412,16 @@ class TableEditorController extends ChangeNotifier {
     _toolMode = EditorToolMode.select;
     _selectedPathId = newPath.id;
     _selectedVertexIndex = points.length - 1;
-    notifyListeners();
+    _safeNotify();
     return null;
   }
 
   // ---------------------------------------------------------------------------
-  // Giao dịch kéo bi (Phase 1 + cập nhật điểm đầu đường đang liên kết)
+  // Giao dịch kéo bi
   // ---------------------------------------------------------------------------
 
   int? beginBallDrag(String ballId, {DiagramPoint? touchPoint}) {
-    if (isDraggingAny || isDrawingWithDraft) return null;
+    if (isEditingLocked || isDrawingWithDraft) return null;
 
     final ball = _findBall(ballId);
     if (ball == null) return null;
@@ -382,7 +432,7 @@ class TableEditorController extends ChangeNotifier {
     _draftOwnerBallId = ballId;
 
     if (ball.locked) {
-      notifyListeners();
+      _safeNotify();
       return null;
     }
 
@@ -394,7 +444,7 @@ class TableEditorController extends ChangeNotifier {
     _dragFingerOffset = touchPoint != null
         ? (ball.center - touchPoint)
         : const DiagramPoint(0.0, 0.0);
-    notifyListeners();
+    _safeNotify();
     return token;
   }
 
@@ -404,7 +454,7 @@ class TableEditorController extends ChangeNotifier {
   }
 
   void updateBallDrag(DiagramPoint desiredCenter, {int? dragToken}) {
-    if (_activeDragToken == null) return;
+    if (_isLoading || _activeDragToken == null) return;
     if (dragToken != null && dragToken != _activeDragToken) return;
 
     final ballId = _draggingBallId;
@@ -432,7 +482,7 @@ class TableEditorController extends ChangeNotifier {
       paths: _scene.paths,
     );
     _scene = _scene.withBallsAndPaths(balls: updatedBalls, paths: updatedPaths);
-    notifyListeners();
+    _safeNotify();
   }
 
   bool endBallDrag({int? dragToken}) {
@@ -451,7 +501,7 @@ class TableEditorController extends ChangeNotifier {
         _pushUndoSnapshot(snapshot);
       }
     }
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
@@ -465,7 +515,7 @@ class TableEditorController extends ChangeNotifier {
     if (snapshot != null) {
       _scene = snapshot;
     }
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
@@ -478,7 +528,7 @@ class TableEditorController extends ChangeNotifier {
   }
 
   // ---------------------------------------------------------------------------
-  // Giao dịch kéo điểm điều khiển của đường & chỉnh đường
+  // Giao dịch kéo điểm điều khiển & chỉnh đường
   // ---------------------------------------------------------------------------
 
   int? beginVertexDrag(
@@ -487,7 +537,7 @@ class TableEditorController extends ChangeNotifier {
     DiagramPoint? touchPoint,
     void Function(String message)? onBlocked,
   }) {
-    if (isDraggingAny || isDrawingWithDraft) return null;
+    if (isEditingLocked || isDrawingWithDraft) return null;
 
     final path = _findPath(pathId);
     if (path == null) return null;
@@ -501,7 +551,7 @@ class TableEditorController extends ChangeNotifier {
       onBlocked?.call(
         'Điểm đầu đang gắn với tâm bi. Hãy gỡ liên kết nếu muốn kéo tách điểm đầu.',
       );
-      notifyListeners();
+      _safeNotify();
       return null;
     }
 
@@ -514,7 +564,7 @@ class TableEditorController extends ChangeNotifier {
     _vertexDragFingerOffset = touchPoint != null
         ? (vertices[vertexIndex] - touchPoint)
         : const DiagramPoint(0.0, 0.0);
-    notifyListeners();
+    _safeNotify();
     return token;
   }
 
@@ -524,7 +574,7 @@ class TableEditorController extends ChangeNotifier {
   }
 
   void updateVertexDrag(DiagramPoint desiredPoint, {int? dragToken}) {
-    if (_activeVertexDragToken == null) return;
+    if (_isLoading || _activeVertexDragToken == null) return;
     if (dragToken != null && dragToken != _activeVertexDragToken) return;
 
     final pathId = _draggingVertexPathId;
@@ -553,7 +603,7 @@ class TableEditorController extends ChangeNotifier {
         .map((p) => p.id == pathId ? updatedPath : p)
         .toList(growable: false);
     _scene = _scene.withPaths(updatedPaths);
-    notifyListeners();
+    _safeNotify();
   }
 
   bool endVertexDrag({int? dragToken}) {
@@ -579,7 +629,7 @@ class TableEditorController extends ChangeNotifier {
         }
       }
     }
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
@@ -593,7 +643,7 @@ class TableEditorController extends ChangeNotifier {
     if (snapshot != null) {
       _scene = snapshot;
     }
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
@@ -606,9 +656,8 @@ class TableEditorController extends ChangeNotifier {
     _vertexDragFingerOffset = const DiagramPoint(0.0, 0.0);
   }
 
-  /// Chèn thêm một điểm điều khiển tại trung điểm của đoạn [segmentIndex] (hoặc đoạn đang chọn).
   bool insertVertexOnSelectedPath({int? segmentIndex}) {
-    if (isDraggingAny || isDrawingWithDraft) return false;
+    if (isEditingLocked || isDrawingWithDraft) return false;
     final path = selectedPath;
     if (path == null) return false;
 
@@ -625,12 +674,12 @@ class TableEditorController extends ChangeNotifier {
       _scene.paths.map((p) => p.id == path.id ? updated : p).toList(),
     );
     _selectedVertexIndex = targetSeg + 1;
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
-  /// Xóa điểm đang chọn (nếu đường có > 2 điểm). Trả về thông báo nếu không thể xóa.
   String? deleteSelectedVertex() {
+    if (_isLoading) return 'Đang tải dữ liệu, vui lòng chờ.';
     if (isDraggingAny || isDrawingWithDraft) {
       return 'Đang có thao tác khác chưa hoàn tất.';
     }
@@ -656,12 +705,12 @@ class TableEditorController extends ChangeNotifier {
     );
     final newLen = PathGeometry.extractVertices(updated).length;
     _selectedVertexIndex = idx.clamp(0, newLen - 1);
-    notifyListeners();
+    _safeNotify();
     return null;
   }
 
   bool reverseSelectedPath() {
-    if (isDraggingAny || isDrawingWithDraft) return false;
+    if (isEditingLocked || isDrawingWithDraft) return false;
     final path = selectedPath;
     if (path == null) return false;
 
@@ -671,12 +720,12 @@ class TableEditorController extends ChangeNotifier {
       _scene.paths.map((p) => p.id == path.id ? updated : p).toList(),
     );
     _selectedVertexIndex = null;
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
   bool deleteSelectedPath() {
-    if (isDraggingAny || isDrawingWithDraft) return false;
+    if (isEditingLocked || isDrawingWithDraft) return false;
     final pathId = _selectedPathId;
     if (pathId == null) return false;
     if (_findPath(pathId) == null) return false;
@@ -687,12 +736,12 @@ class TableEditorController extends ChangeNotifier {
     );
     _selectedPathId = null;
     _selectedVertexIndex = null;
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
   bool toggleSelectedPathStartAnchor() {
-    if (isDraggingAny || isDrawingWithDraft) return false;
+    if (isEditingLocked || isDrawingWithDraft) return false;
     final path = selectedPath;
     if (path == null) return false;
 
@@ -710,7 +759,7 @@ class TableEditorController extends ChangeNotifier {
     _scene = _scene.withPaths(
       _scene.paths.map((p) => p.id == path.id ? updated : p).toList(),
     );
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
@@ -723,7 +772,7 @@ class TableEditorController extends ChangeNotifier {
     int? customColorValue,
     bool clearCustomColor = false,
   }) {
-    if (isDraggingAny || isDrawingWithDraft) return false;
+    if (isEditingLocked || isDrawingWithDraft) return false;
     final path = selectedPath;
     if (path == null) return false;
 
@@ -751,7 +800,7 @@ class TableEditorController extends ChangeNotifier {
     _scene = _scene.withPaths(
       _scene.paths.map((p) => p.id == path.id ? updated : p).toList(),
     );
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
@@ -760,6 +809,7 @@ class TableEditorController extends ChangeNotifier {
   // ---------------------------------------------------------------------------
 
   String? setBallPosition(String ballId, DiagramPoint newCenter) {
+    if (_isLoading) return 'Đang tải dữ liệu, vui lòng chờ.';
     if (isDraggingAny) {
       return 'Đang kéo, hãy thả tay trước khi sửa tọa độ.';
     }
@@ -793,12 +843,12 @@ class TableEditorController extends ChangeNotifier {
       paths: _scene.paths,
     );
     _scene = _scene.withBallsAndPaths(balls: updatedBalls, paths: updatedPaths);
-    notifyListeners();
+    _safeNotify();
     return null;
   }
 
   bool toggleBallLock(String ballId) {
-    if (isDraggingAny || isDrawingWithDraft) return false;
+    if (isEditingLocked || isDrawingWithDraft) return false;
     final ball = _findBall(ballId);
     if (ball == null) return false;
 
@@ -807,14 +857,12 @@ class TableEditorController extends ChangeNotifier {
         .map((b) => b.id == ballId ? b.copyWith(locked: !b.locked) : b)
         .toList(growable: false);
     _scene = _scene.withBalls(updatedBalls);
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
-  /// Kiểm tra bán kính mới với cả bi và các đường hiện có.
-  /// Nếu [allowInvalidPaths] == false (mặc định), trả về thông báo nếu đổi bán kính làm
-  /// đường bị vượt giới hạn; nếu true, áp dụng bán kính mới và đánh dấu các đường lỗi.
   String? trySetBallRadius(double newRadius, {bool allowInvalidPaths = false}) {
+    if (_isLoading) return 'Đang tải dữ liệu, vui lòng chờ.';
     if (isDraggingAny || isDrawingWithDraft) {
       return 'Hãy hoàn tất thao tác hiện tại trước khi đổi bán kính.';
     }
@@ -849,12 +897,12 @@ class TableEditorController extends ChangeNotifier {
 
     _pushUndoSnapshot(_scene);
     _scene = _scene.withBalls(updatedBalls);
-    notifyListeners();
+    _safeNotify();
     return null;
   }
 
   bool resetBalls() {
-    if (isDraggingAny || isDrawingWithDraft) return false;
+    if (isEditingLocked || isDrawingWithDraft) return false;
     final defaults = DiagramScene.defaultInitial(id: _scene.id).balls;
     if (_ballsEqual(_scene.balls, defaults)) return false;
 
@@ -868,7 +916,7 @@ class TableEditorController extends ChangeNotifier {
       );
     }
     _scene = _scene.withBallsAndPaths(balls: defaults, paths: updatedPaths);
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
@@ -882,7 +930,7 @@ class TableEditorController extends ChangeNotifier {
       _selectedVertexIndex = null;
     }
     _authoritativeRevision++;
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
@@ -896,24 +944,48 @@ class TableEditorController extends ChangeNotifier {
       _selectedVertexIndex = null;
     }
     _authoritativeRevision++;
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
   // ---------------------------------------------------------------------------
-  // Lưu và tải lại một sơ đồ
+  // Lưu và tải bất đồng bộ an toàn
   // ---------------------------------------------------------------------------
 
-  Future<String?> loadFromStorage() async {
+  /// Tải sơ đồ từ kho lưu trữ.
+  /// - Khóa thao tác chỉnh sửa trong suốt quá trình tải.
+  /// - Nếu [force] == false và đang có thay đổi chưa lưu, trả về `needsConfirmation`
+  ///   và không ghi đè dữ liệu đang chỉnh.
+  /// - Nếu tải lỗi, giữ nguyên toàn bộ trạng thái hiện tại.
+  Future<LoadOutcome> loadFromStorage({bool force = false}) async {
     final repo = storage;
-    if (repo == null) return null;
+    if (repo == null) {
+      return const LoadOutcome(LoadStatus.loaded);
+    }
+    if (_isLoading || _isSaving || isDraggingAny) {
+      return const LoadOutcome(
+        LoadStatus.rejectedBusy,
+        'Đang bận thao tác khác, chưa thể tải lại.',
+      );
+    }
+    if (!force && hasUnsavedChanges) {
+      return const LoadOutcome(
+        LoadStatus.needsConfirmation,
+        'Đang có thay đổi chưa lưu.',
+      );
+    }
 
     _isLoading = true;
     _loadError = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final loaded = await repo.loadScene();
+      if (_isDisposed) {
+        _isLoading = false;
+        return const LoadOutcome(LoadStatus.loaded);
+      }
+
       if (loaded != null) {
         _savedBaseline = loaded;
         _scene = loaded;
@@ -930,40 +1002,71 @@ class TableEditorController extends ChangeNotifier {
       _selectedVertexIndex = null;
       _authoritativeRevision++;
       _isLoading = false;
-      notifyListeners();
-      return null;
+      _safeNotify();
+      return const LoadOutcome(LoadStatus.loaded);
     } catch (e) {
       _isLoading = false;
       _loadError = e.toString();
-      notifyListeners();
-      return _loadError;
+      _safeNotify();
+      return LoadOutcome(LoadStatus.error, _loadError);
     }
   }
 
-  Future<String?> saveToStorage() async {
+  /// Lưu sơ đồ với snapshot cố định được chụp trước khi `await`:
+  /// - Không nhận hai yêu cầu lưu đồng thời.
+  /// - Khi thành công chỉ cập nhật `savedBaseline = snapshotToSave`.
+  /// - Nếu có chỉnh sửa mới trong lúc đang lưu, `hasUnsavedChanges` vẫn giữ `true`
+  ///   và không báo đã lưu toàn bộ.
+  Future<SaveOutcome> saveToStorage() async {
     final repo = storage;
     if (repo == null) {
-      return 'Chưa cấu hình kho lưu trữ.';
+      return const SaveOutcome(
+        SaveStatus.error,
+        'Chưa cấu hình kho lưu trữ.',
+      );
     }
-    if (isDraggingAny || isDrawingWithDraft) {
-      return 'Hãy hoàn tất hoặc hủy thao tác đang vẽ/kéo trước khi lưu.';
+    if (_isSaving) {
+      return const SaveOutcome(
+        SaveStatus.rejectedBusy,
+        'Đang lưu sơ đồ, vui lòng chờ.',
+      );
+    }
+    if (_isLoading || isDraggingAny || isDrawingWithDraft) {
+      return const SaveOutcome(
+        SaveStatus.rejectedBusy,
+        'Hãy hoàn tất thao tác hiện tại trước khi lưu.',
+      );
     }
 
+    final snapshotToSave = _scene;
     _isSaving = true;
     _saveError = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
-      await repo.saveScene(_scene);
-      _savedBaseline = _scene;
+      await repo.saveScene(snapshotToSave);
+      _savedBaseline = snapshotToSave;
       _isSaving = false;
-      notifyListeners();
-      return null;
+
+      if (_isDisposed) {
+        return const SaveOutcome(SaveStatus.savedAll, 'Đã lưu sơ đồ');
+      }
+
+      if (_scene == _savedBaseline) {
+        _safeNotify();
+        return const SaveOutcome(SaveStatus.savedAll, 'Đã lưu sơ đồ');
+      } else {
+        _safeNotify();
+        return const SaveOutcome(
+          SaveStatus.savedSnapshotWithNewerEdits,
+          'Đã lưu bản trước đó; vẫn còn thay đổi mới chưa lưu.',
+        );
+      }
     } catch (e) {
       _isSaving = false;
       _saveError = 'Không thể lưu sơ đồ: $e';
-      notifyListeners();
-      return _saveError;
+      _safeNotify();
+      return SaveOutcome(SaveStatus.error, _saveError!);
     }
   }
 

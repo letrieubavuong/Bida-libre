@@ -12,34 +12,44 @@ abstract class SceneStorage {
   Future<void> saveScene(DiagramScene scene);
 }
 
-/// Repository lưu một sơ đồ vector dạng JSON nguyên tử trong thư mục dữ liệu bền vững
+typedef FileReplaceHook = Future<void> Function(File tmpFile, File targetFile);
+
+/// Repository lưu một sơ đồ vector dạng JSON an toàn trong thư mục dữ liệu bền vững
 /// của ứng dụng (`getApplicationSupportDirectory()`), không dùng thư mục tạm.
+///
+/// Cơ chế an toàn ghi/phục hồi:
+/// - Giữ bản sao tốt gần nhất (`primary_scene.json.bak`) trước khi thay thế.
+/// - Ghi dữ liệu mới ra tệp tạm cùng thư mục (`primary_scene.json.tmp`) và flush trước khi thay thế.
+/// - Không xóa tệp chính trước khi thay thế thành công.
+/// - Nếu tệp chính bị hỏng nhưng `.bak` còn nguyên vẹn, tự phục hồi từ `.bak` và giữ bản sao hỏng (`.corrupt`).
+/// - Từ chối ghi đè hoặc tải schema mới hơn phiên bản app hiện tại.
 class FileSceneStorage implements SceneStorage {
   static const String defaultFileName = 'primary_scene.json';
 
   final Future<Directory> Function() _directoryProvider;
   final String fileName;
+  final FileReplaceHook _replaceFile;
 
   FileSceneStorage({
     Future<Directory> Function()? directoryProvider,
     this.fileName = defaultFileName,
-  }) : _directoryProvider = directoryProvider ?? getApplicationSupportDirectory;
+    FileReplaceHook? replaceFile,
+  })  : _directoryProvider = directoryProvider ?? getApplicationSupportDirectory,
+        _replaceFile = replaceFile ?? _defaultReplaceFile;
 
-  Future<File> _resolveTargetFile() async {
+  static Future<void> _defaultReplaceFile(File tmpFile, File targetFile) async {
+    await tmpFile.rename(targetFile.path);
+  }
+
+  Future<File> _resolveFile(String suffix) async {
     final dir = await _directoryProvider();
     if (!await dir.exists()) {
       await dir.create(recursive: true);
     }
-    return File(p.join(dir.path, fileName));
+    return File(p.join(dir.path, '$fileName$suffix'));
   }
 
-  @override
-  Future<DiagramScene?> loadScene() async {
-    final target = await _resolveTargetFile();
-    if (!await target.exists()) {
-      return null;
-    }
-    final raw = await target.readAsString();
+  DiagramScene _decodeStrict(String raw) {
     if (raw.trim().isEmpty) {
       throw const FormatException('Tệp sơ đồ bị rỗng.');
     }
@@ -50,6 +60,61 @@ class FileSceneStorage implements SceneStorage {
     return DiagramScene.fromJson(decoded);
   }
 
+  Future<void> _preserveCorruptCopy(File source, File corruptFile) async {
+    if (await source.exists()) {
+      await source.copy(corruptFile.path);
+    }
+  }
+
+  @override
+  Future<DiagramScene?> loadScene() async {
+    final target = await _resolveFile('');
+    final backup = await _resolveFile('.bak');
+    final corrupt = await _resolveFile('.corrupt');
+
+    if (await target.exists()) {
+      try {
+        final raw = await target.readAsString();
+        return _decodeStrict(raw);
+      } on SchemaVersionException {
+        rethrow;
+      } catch (primaryError) {
+        // Tệp chính bị hỏng: giữ lại bản sao hỏng và thử phục hồi từ bản sao lưu `.bak`.
+        await _preserveCorruptCopy(target, corrupt);
+        if (await backup.exists()) {
+          try {
+            final bakRaw = await backup.readAsString();
+            final recovered = _decodeStrict(bakRaw);
+            // Phục hồi lại tệp chính qua tệp tạm mà không xóa trực tiếp trước khi ghi xong.
+            final recoveryTmp = await _resolveFile('.recover.tmp');
+            await recoveryTmp.writeAsString(bakRaw, flush: true);
+            await _replaceFile(recoveryTmp, target);
+            return recovered;
+          } on SchemaVersionException {
+            rethrow;
+          } catch (_) {
+            // Backup cũng hỏng -> báo lỗi gốc.
+          }
+        }
+        throw FormatException(
+          'Tệp sơ đồ bị hỏng và không thể phục hồi: $primaryError',
+        );
+      }
+    }
+
+    // Trường hợp tệp chính chưa kịp tạo lại nhưng có `.bak` hợp lệ sau gián đoạn.
+    if (await backup.exists()) {
+      final bakRaw = await backup.readAsString();
+      final recovered = _decodeStrict(bakRaw);
+      final recoveryTmp = await _resolveFile('.recover.tmp');
+      await recoveryTmp.writeAsString(bakRaw, flush: true);
+      await _replaceFile(recoveryTmp, target);
+      return recovered;
+    }
+
+    return null;
+  }
+
   @override
   Future<void> saveScene(DiagramScene scene) async {
     final validationError = scene.validateScene();
@@ -57,39 +122,41 @@ class FileSceneStorage implements SceneStorage {
       throw FormatException(validationError);
     }
 
-    final target = await _resolveTargetFile();
+    final target = await _resolveFile('');
+    final backup = await _resolveFile('.bak');
+    final corrupt = await _resolveFile('.corrupt');
+    final tmpFile = await _resolveFile('.tmp');
 
-    // Không ghi đè nếu tệp hiện có thuộc schema mới hơn bản app hiện tại.
     if (await target.exists()) {
+      final existingRaw = await target.readAsString();
+      var existingValid = false;
       try {
-        final existingRaw = await target.readAsString();
-        if (existingRaw.trim().isNotEmpty) {
-          final existingJson = jsonDecode(existingRaw);
-          if (existingJson is Map<String, dynamic>) {
-            final existingVersion = (existingJson['version'] as num?)?.toInt();
-            if (existingVersion != null &&
-                existingVersion > DiagramScene.currentSchemaVersion) {
-              throw SchemaVersionException(
-                foundVersion: existingVersion,
-                supportedVersion: DiagramScene.currentSchemaVersion,
-              );
-            }
-          }
-        }
+        _decodeStrict(existingRaw);
+        existingValid = true;
       } on SchemaVersionException {
         rethrow;
       } catch (_) {
-        // Nếu tệp cũ bị hỏng không đọc được JSON, cho phép ghi đè bằng bản hợp lệ mới.
+        // Tệp cũ đang hỏng -> lưu lại một bản sao `.corrupt` trước khi thay thế có chủ đích.
+        await _preserveCorruptCopy(target, corrupt);
+      }
+
+      // Sao lưu bản hợp lệ gần nhất sang `.bak` trước khi thay thế tệp chính.
+      if (existingValid) {
+        final bakTmp = await _resolveFile('.bak.tmp');
+        await bakTmp.writeAsString(existingRaw, flush: true);
+        await _replaceFile(bakTmp, backup);
       }
     }
 
     final payload = const JsonEncoder.withIndent('  ').convert(scene.toJson());
-    final tmpFile = File('${target.path}.tmp');
     await tmpFile.writeAsString(payload, flush: true);
-    if (await target.exists()) {
-      await target.delete();
+
+    try {
+      await _replaceFile(tmpFile, target);
+    } catch (_) {
+      // Giữ nguyên tệp chính / `.bak` hiện có; không xóa bản đã lưu trước đó.
+      rethrow;
     }
-    await tmpFile.rename(target.path);
   }
 }
 
