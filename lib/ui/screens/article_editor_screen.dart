@@ -283,7 +283,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
       title: _titleCtrl.text,
       summary: _summaryCtrl.text.trim(),
       primaryGroupId: _primaryGroupId,
-      tags: List<String>.unmodifiable(_tags),
+      tags: _mergedTagsWithPendingInput(),
       difficulty: _difficulty,
       goal: _goalCtrl.text.trim(),
       content: _contentCtrl.text.trim(),
@@ -318,12 +318,31 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
 
   bool get _hasUnsavedChanges {
     if (_savedPopped) return false;
+    if (_tagInputCtrl.text.trim().isNotEmpty) return true;
     if (_numericFieldChanged(_tipXCtrl.text, _initialTipXRaw)) return true;
     if (_numericFieldChanged(_tipZCtrl.text, _initialTipZRaw)) return true;
     if (_numericFieldChanged(_exactThickCtrl.text, _initialExactRaw)) {
       return true;
     }
     return _buildCurrentDraft() != _initialBaseline;
+  }
+
+  List<String> _mergedTagsWithPendingInput() {
+    final result = List<String>.from(_tags);
+    final pendingClean = VietnameseSearchNormalizer.cleanTagDisplay(
+      _tagInputCtrl.text,
+    );
+    if (pendingClean.isNotEmpty) {
+      final pendingKey =
+          VietnameseSearchNormalizer.tagDuplicateKey(pendingClean);
+      final exists = result.any(
+        (t) => VietnameseSearchNormalizer.tagDuplicateKey(t) == pendingKey,
+      );
+      if (!exists) {
+        result.add(pendingClean);
+      }
+    }
+    return List<String>.unmodifiable(result);
   }
 
   void _addTag(String raw) {

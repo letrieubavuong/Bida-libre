@@ -676,5 +676,290 @@ void main() {
       timeout: const Timeout(Duration(seconds: 25)),
     );
   });
+
+  group('Phase 4B — Hồi quy: Báo lỗi bộ sưu tập & Bảo vệ thẻ đang nhập', () {
+    testWidgets(
+      'Lỗi tạo, đổi thứ tự, bỏ bài trong bộ sưu tập: hiện lỗi, giữ dữ liệu cũ & thử lại thành công',
+      (tester) async {
+        final tempDir = Directory.systemTemp.createTempSync('lb_p4b_col_err_');
+        addTearDown(() {
+          if (tempDir.existsSync()) {
+            try {
+              tempDir.deleteSync(recursive: true);
+            } catch (_) {}
+          }
+        });
+        final dbPath = p.join(tempDir.path, 'col_err.db');
+
+        String? failStage;
+        final repo = SqliteNotebookRepository(
+          dbPath: dbPath,
+          debugTransactionHook: (txn, stage) async {
+            if (failStage != null && stage == failStage) {
+              throw const FileSystemException('Simulated collection write error');
+            }
+          },
+        );
+        await tester.runAsync(() => repo.initialize());
+
+        late Article a1;
+        late Article a2;
+        late Collection col;
+        await tester.runAsync(() async {
+          a1 = await repo.saveArticle(
+            _makeArticle(
+              kind: ArticleKind.technique,
+              title: 'Bài 1 BST',
+              primaryGroupId: 'tech_draw',
+            ),
+          );
+          a2 = await repo.saveArticle(
+            _makeArticle(
+              kind: ArticleKind.technique,
+              title: 'Bài 2 BST',
+              primaryGroupId: 'tech_draw',
+            ),
+          );
+          col = await repo.createCollection('Bộ sưu tập gốc');
+          await repo.addArticleToCollection(collectionId: col.id, articleId: a1.id);
+          await repo.addArticleToCollection(collectionId: col.id, articleId: a2.id);
+        });
+
+        final controller = NotebookController(repository: repo);
+        await tester.pumpWidget(LibreBilliardApp(controller: controller));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('collections_button')));
+        await tester.pumpAndSettle();
+
+        // 1. Giả lập lỗi khi tạo bộ sưu tập -> hiện lỗi & giữ nguyên tên đã nhập để thử lại
+        failStage = 'before_create_collection';
+        await tester.tap(find.byKey(const Key('add_collection_button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('collection_name_input')),
+          'Bộ sưu tập thử lại',
+        );
+        await tester.tap(find.byKey(const Key('confirm_collection_name_button')));
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pumpAndSettle();
+
+        expect(find.textContaining('Không thể tạo bộ sưu tập'), findsOneWidget);
+        expect(
+          tester
+              .widget<TextField>(find.byKey(const Key('collection_name_input')))
+              .controller!
+              .text,
+          'Bộ sưu tập thử lại',
+        );
+        expect(controller.collections.length, 1);
+
+        // Tắt lỗi -> bấm Lưu thử lại thành công
+        failStage = null;
+        await tester.tap(find.byKey(const Key('confirm_collection_name_button')));
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pumpAndSettle();
+        expect(find.text('Bộ sưu tập thử lại'), findsOneWidget);
+        expect(controller.collections.length, 2);
+
+        // Mở chi tiết 'Bộ sưu tập gốc'
+        await tester.tap(find.byKey(Key('collection_card_${col.id}')));
+        await tester.pumpAndSettle();
+        expect(find.byType(CollectionDetailScreen), findsOneWidget);
+
+        // 2. Giả lập lỗi khi đổi thứ tự bài -> hiện thông báo lỗi & giữ nguyên thứ tự [a1, a2]
+        failStage = 'before_reorder_collection';
+        await tester.tap(find.byKey(Key('collection_item_down_${a1.id}')));
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pumpAndSettle();
+        expect(
+          find.textContaining('Không thể lưu thứ tự bài trong bộ sưu tập'),
+          findsOneWidget,
+        );
+        expect(
+          controller.getCollectionById(col.id)!.orderedArticleIds,
+          [a1.id, a2.id],
+        );
+
+        // 3. Giả lập lỗi khi bỏ bài -> hiện thông báo lỗi & giữ nguyên cả 2 bài
+        failStage = 'before_remove_collection_item';
+        await tester.tap(find.byKey(Key('collection_remove_item_${a1.id}')));
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pumpAndSettle();
+        expect(
+          find.textContaining('Không thể bỏ bài khỏi bộ sưu tập'),
+          findsOneWidget,
+        );
+        expect(
+          controller.getCollectionById(col.id)!.orderedArticleIds,
+          [a1.id, a2.id],
+        );
+
+        // Đóng & mở lại SQLite xác nhận dữ liệu/thứ tự cũ còn nguyên
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+        await tester.runAsync(() => repo.close());
+
+        final repoVerify = SqliteNotebookRepository(dbPath: dbPath);
+        await tester.runAsync(() => repoVerify.initialize());
+        expect(
+          repoVerify.getCollectionById(col.id)!.orderedArticleIds,
+          [a1.id, a2.id],
+        );
+
+        // Thử lại đổi thứ tự & bỏ bài khi hết lỗi -> thành công
+        final controller2 = NotebookController(repository: repoVerify);
+        await tester.pumpWidget(
+          LibreBilliardApp(key: UniqueKey(), controller: controller2),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('collections_button')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('collection_card_${col.id}')));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(Key('collection_item_down_${a1.id}')));
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pumpAndSettle();
+        expect(
+          controller2.getCollectionById(col.id)!.orderedArticleIds,
+          [a2.id, a1.id],
+        );
+
+        await tester.tap(find.byKey(Key('collection_remove_item_${a1.id}')));
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pumpAndSettle();
+        expect(
+          controller2.getCollectionById(col.id)!.orderedArticleIds,
+          [a2.id],
+        );
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller2.dispose();
+        await tester.runAsync(() => repoVerify.close());
+      },
+      timeout: const Timeout(Duration(seconds: 25)),
+    );
+
+    testWidgets(
+      'Bảo vệ thẻ đang nhập: Back hệ thống hỏi lưu, Ở lại giữ nguyên, Lưu bài/Lưu nháp tự thêm & chống trùng, lỗi giữ nguyên để thử lại',
+      (tester) async {
+        final tempDir = Directory.systemTemp.createTempSync('lb_p4b_tag_guard_');
+        addTearDown(() {
+          if (tempDir.existsSync()) {
+            try {
+              tempDir.deleteSync(recursive: true);
+            } catch (_) {}
+          }
+        });
+
+        bool failArticleSave = false;
+        final repo = SqliteNotebookRepository(
+          dbPath: p.join(tempDir.path, 'tag_guard.db'),
+          debugTransactionHook: (txn, stage) async {
+            if (failArticleSave && stage == 'after_article_insert') {
+              throw const FileSystemException('Simulated article save error');
+            }
+          },
+        );
+        await tester.runAsync(() => repo.initialize());
+
+        late Article existing;
+        await tester.runAsync(() async {
+          existing = await repo.saveArticle(
+            _makeArticle(
+              kind: ArticleKind.technique,
+              title: 'Bài kiểm tra thẻ đang gõ',
+              primaryGroupId: 'tech_draw',
+              tags: const ['Cu lê'],
+            ),
+          );
+        });
+
+        final controller = NotebookController(repository: repo);
+        await tester.pumpWidget(LibreBilliardApp(controller: controller));
+        await tester.pumpAndSettle();
+
+        // Mở bài -> Sửa -> chưa gõ gì -> Back hệ thống thoát thẳng
+        await tester.tap(find.byKey(Key('article_card_${existing.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('detail_edit_button')));
+        await tester.pumpAndSettle();
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        expect(find.byType(ArticleEditorScreen), findsNothing);
+
+        // Mở lại -> chỉ gõ thẻ vào ô tag_input (chưa bấm Thêm) -> Back hệ thống phải hỏi
+        await tester.tap(find.byKey(const Key('detail_edit_button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('tag_input')),
+          '  Trô   kéo  ',
+        );
+        await tester.pumpAndSettle();
+
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        expect(find.text('Thay đổi chưa được lưu'), findsOneWidget);
+
+        // Chọn Ở lại -> giữ nguyên nội dung trong ô thẻ
+        await tester.tap(find.text('Ở lại'));
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widget<TextField>(find.byKey(const Key('tag_input')))
+              .controller!
+              .text,
+          '  Trô   kéo  ',
+        );
+
+        // Giả lập lưu lỗi -> giữ nguyên thẻ đang gõ để thử lại
+        failArticleSave = true;
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pumpAndSettle();
+        expect(find.text('Chưa thể lưu bài viết'), findsOneWidget);
+        await tester.tap(find.text('Đóng'));
+        await tester.pumpAndSettle();
+        expect(find.byType(ArticleEditorScreen), findsOneWidget);
+        expect(
+          tester
+              .widget<TextField>(find.byKey(const Key('tag_input')))
+              .controller!
+              .text,
+          '  Trô   kéo  ',
+        );
+
+        // Tắt lỗi -> bấm Lưu bài -> tự thêm 'Trô kéo' sau khi chuẩn hóa
+        failArticleSave = false;
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pumpAndSettle();
+        expect(find.byType(ArticleEditorScreen), findsNothing);
+        expect(
+          controller.getArticleById(existing.id)!.tags,
+          ['Cu lê', 'Trô kéo'],
+        );
+
+        // Mở sửa lại, gõ thẻ trùng hoa/thường/khoảng trắng '  cu lê ' rồi bấm Lưu nháp -> không thêm lần 2
+        await tester.tap(find.byKey(const Key('detail_edit_button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('tag_input')), '  cu lê ');
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('save_draft_button')));
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pumpAndSettle();
+        expect(
+          controller.getArticleById(existing.id)!.tags,
+          ['Cu lê', 'Trô kéo'],
+        );
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+        await tester.runAsync(() => repo.close());
+      },
+      timeout: const Timeout(Duration(seconds: 25)),
+    );
+  });
 }
 

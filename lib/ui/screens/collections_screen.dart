@@ -18,28 +18,56 @@ class CollectionsScreen extends StatefulWidget {
 }
 
 class _CollectionsScreenState extends State<CollectionsScreen> {
-  Future<void> _showNameDialog({Collection? existing}) async {
-    final rawName = await showDialog<String>(
-      context: context,
-      builder: (_) => _CollectionNameDialog(existing: existing),
-    );
-    if (rawName == null || !mounted) return;
-
-    final clean = rawName.trim();
-    if (clean.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Tên bộ sưu tập không được để trống.')),
+  Future<void> _showNameDialog({
+    Collection? existing,
+    String? initialName,
+  }) async {
+    var draftName = initialName ?? existing?.name ?? '';
+    while (mounted) {
+      final rawName = await showDialog<String>(
+        context: context,
+        builder: (_) => _CollectionNameDialog(
+          existing: existing,
+          initialName: draftName,
+        ),
       );
-      return;
-    }
+      if (rawName == null || !mounted) return;
 
-    if (existing == null) {
-      await widget.controller.createCollection(clean);
-    } else {
-      final err = await widget.controller.renameCollection(existing.id, clean);
-      if (!mounted) return;
-      if (err != null) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      final clean = rawName.trim();
+      if (clean.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Tên bộ sưu tập không được để trống.')),
+        );
+        draftName = rawName;
+        continue;
+      }
+
+      if (existing == null) {
+        final outcome = await widget.controller.createCollection(clean);
+        if (!mounted) return;
+        if (!outcome.isSuccess) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(
+              SnackBar(
+                content: Text(
+                  outcome.error ?? 'Không thể tạo bộ sưu tập (chưa lưu).',
+                ),
+              ),
+            );
+          draftName = clean;
+          continue;
+        }
+        return;
+      } else {
+        final err = await widget.controller.renameCollection(existing.id, clean);
+        if (!mounted) return;
+        if (err != null) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+          draftName = clean;
+          continue;
+        }
+        return;
       }
     }
   }
@@ -241,10 +269,25 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
     if (idx < 0 || next < 0 || next >= ids.length) return;
     final item = ids.removeAt(idx);
     ids.insert(next, item);
-    await widget.controller.reorderCollectionArticles(
+    final err = await widget.controller.reorderCollectionArticles(
       collectionId: collection.id,
       orderedArticleIds: ids,
     );
+    if (!mounted || err == null) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(err)));
+  }
+
+  Future<void> _removeArticle(Collection collection, String articleId) async {
+    final err = await widget.controller.removeArticleFromCollection(
+      collectionId: collection.id,
+      articleId: articleId,
+    );
+    if (!mounted || err == null) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(err)));
   }
 
   @override
@@ -371,11 +414,7 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
                               icon: const Icon(Icons.remove_circle_outline),
                               onPressed: busy
                                   ? null
-                                  : () => widget.controller
-                                      .removeArticleFromCollection(
-                                        collectionId: collection.id,
-                                        articleId: art.id,
-                                      ),
+                                  : () => _removeArticle(collection, art.id),
                             ),
                           ],
                         ),
@@ -391,8 +430,9 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
 
 class _CollectionNameDialog extends StatefulWidget {
   final Collection? existing;
+  final String? initialName;
 
-  const _CollectionNameDialog({this.existing});
+  const _CollectionNameDialog({this.existing, this.initialName});
 
   @override
   State<_CollectionNameDialog> createState() => _CollectionNameDialogState();
@@ -404,7 +444,9 @@ class _CollectionNameDialogState extends State<_CollectionNameDialog> {
   @override
   void initState() {
     super.initState();
-    _ctrl = TextEditingController(text: widget.existing?.name ?? '');
+    _ctrl = TextEditingController(
+      text: widget.initialName ?? widget.existing?.name ?? '',
+    );
   }
 
   @override

@@ -13,6 +13,15 @@ class ArticleSaveOutcome {
   bool get isSuccess => article != null && error == null;
 }
 
+class CollectionActionOutcome {
+  final Collection? collection;
+  final String? error;
+
+  const CollectionActionOutcome({this.collection, this.error});
+
+  bool get isSuccess => collection != null && error == null;
+}
+
 class TabViewState {
   final ArticleFilterCriteria criteria;
   final double scrollOffset;
@@ -406,19 +415,25 @@ class NotebookController extends ChangeNotifier {
 
   // --- Quản lý bộ sưu tập ---
 
-  Future<Collection?> createCollection(String name) async {
-    if (_isSaving || _isLoading) return null;
+  Future<CollectionActionOutcome> createCollection(String name) async {
+    if (_isSaving || _isLoading) {
+      return const CollectionActionOutcome(
+        error: 'Hệ thống đang bận, bộ sưu tập chưa được lưu.',
+      );
+    }
     _isSaving = true;
     _safeNotify();
     try {
       final created = await _repository.createCollection(name);
       _isSaving = false;
       _safeNotify();
-      return created;
-    } catch (_) {
+      return CollectionActionOutcome(collection: created);
+    } catch (e) {
       _isSaving = false;
       _safeNotify();
-      return null;
+      return CollectionActionOutcome(
+        error: 'Không thể tạo bộ sưu tập (chưa lưu): $e',
+      );
     }
   }
 
@@ -498,7 +513,9 @@ class NotebookController extends ChangeNotifier {
     required String collectionId,
     required String articleId,
   }) async {
-    if (_isSaving || _isLoading) return 'Hệ thống đang bận.';
+    if (_isSaving || _isLoading) {
+      return 'Hệ thống đang bận, thao tác chưa được lưu.';
+    }
     _isSaving = true;
     _safeNotify();
     try {
@@ -512,7 +529,7 @@ class NotebookController extends ChangeNotifier {
     } catch (e) {
       _isSaving = false;
       _safeNotify();
-      return 'Không thể bỏ bài khỏi bộ sưu tập: $e';
+      return 'Không thể bỏ bài khỏi bộ sưu tập (chưa lưu): $e';
     }
   }
 
@@ -520,7 +537,9 @@ class NotebookController extends ChangeNotifier {
     required String collectionId,
     required List<String> orderedArticleIds,
   }) async {
-    if (_isSaving || _isLoading) return 'Hệ thống đang bận.';
+    if (_isSaving || _isLoading) {
+      return 'Hệ thống đang bận, thứ tự mới chưa được lưu.';
+    }
     _isSaving = true;
     _safeNotify();
     try {
@@ -534,7 +553,7 @@ class NotebookController extends ChangeNotifier {
     } catch (e) {
       _isSaving = false;
       _safeNotify();
-      return 'Không thể sắp xếp thứ tự bài: $e';
+      return 'Không thể lưu thứ tự bài trong bộ sưu tập (chưa lưu): $e';
     }
   }
 }

@@ -1035,11 +1035,14 @@ class SqliteNotebookRepository implements NotebookRepository {
       }
       final id = generateUuidV4();
       final nowIso = DateTime.now().toUtc().toIso8601String();
-      await db.insert('collections', {
-        'id': id,
-        'name': cleanName,
-        'created_at': nowIso,
-        'updated_at': nowIso,
+      await db.transaction((txn) async {
+        await txn.insert('collections', {
+          'id': id,
+          'name': cleanName,
+          'created_at': nowIso,
+          'updated_at': nowIso,
+        });
+        await debugTransactionHook?.call(txn, 'before_create_collection');
       });
       await _reloadCacheFromDb(db);
       return getCollectionById(id)!;
@@ -1146,6 +1149,7 @@ class SqliteNotebookRepository implements NotebookRepository {
           where: 'id = ?',
           whereArgs: [collectionId],
         );
+        await debugTransactionHook?.call(txn, 'before_add_collection_item');
       });
       await _reloadCacheFromDb(db);
     });
@@ -1186,6 +1190,7 @@ class SqliteNotebookRepository implements NotebookRepository {
           where: 'id = ?',
           whereArgs: [collectionId],
         );
+        await debugTransactionHook?.call(txn, 'before_remove_collection_item');
       });
       await _reloadCacheFromDb(db);
     });
@@ -1214,6 +1219,7 @@ class SqliteNotebookRepository implements NotebookRepository {
           where: 'id = ?',
           whereArgs: [collectionId],
         );
+        await debugTransactionHook?.call(txn, 'before_reorder_collection');
       });
       await _reloadCacheFromDb(db);
     });
