@@ -23,6 +23,8 @@ class ArticleEditorScreen extends StatefulWidget {
   final Future<List<({String name, String? path, Uint8List? bytes})>> Function()?
       imagePickerOverride;
   final Future<bool> Function(Uri uri)? onLaunchUrl;
+  final Future<Uint8List?> Function(ArticleImageAttachment image)?
+      thumbnailLoaderOverride;
 
   const ArticleEditorScreen({
     super.key,
@@ -31,6 +33,7 @@ class ArticleEditorScreen extends StatefulWidget {
     this.initialKind = ArticleKind.technique,
     this.imagePickerOverride,
     this.onLaunchUrl,
+    this.thumbnailLoaderOverride,
   });
 
   @override
@@ -1593,6 +1596,7 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
                   image: _images[i],
                   assetStore: widget.controller.assetStore,
                   cache: _thumbnailCache,
+                  thumbnailLoaderOverride: widget.thumbnailLoaderOverride,
                 ),
                 const SizedBox(width: 12.0),
                 Expanded(
@@ -1707,15 +1711,32 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
 
 /// Bộ đệm LRU cho ảnh thumbnail đính kèm trong editor.
 /// Giới hạn số lượng mục (mặc định 20), giải phóng khi bỏ ảnh hoặc đóng form.
+/// Hỗ trợ token/generation để ngăn các tác vụ tải chậm tự ý ghi lại cache
+/// sau khi ảnh bị xóa khỏi bản nháp hoặc sau khi đóng form/clear cache.
 class EditorThumbnailCache {
   final int maxEntries;
   final Map<String, Uint8List?> _entries = <String, Uint8List?>{};
+  final Map<String, int> _keyGenerations = <String, int>{};
+  final Set<String> _removedAssetIds = <String>{};
 
   EditorThumbnailCache({this.maxEntries = 20});
 
   int get length => _entries.length;
 
   bool containsKey(String key) => _entries.containsKey(key);
+
+  /// Bắt đầu một yêu cầu tải cho [key], trả về token phiên làm việc hiện tại
+  int beginRequest(String key) {
+    return _keyGenerations.putIfAbsent(key, () => 0);
+  }
+
+  /// Kiểm tra token của yêu cầu có còn hợp lệ (chưa bị evict, clear hoặc asset bị bỏ)
+  bool isRequestValid(String key, String assetId, int token) {
+    if (_removedAssetIds.contains(assetId)) return false;
+    final currentGen = _keyGenerations[key];
+    if (currentGen == null || currentGen != token) return false;
+    return true;
+  }
 
   Uint8List? get(String key) {
     if (!_entries.containsKey(key)) return null;
@@ -1724,7 +1745,12 @@ class EditorThumbnailCache {
     return value;
   }
 
-  void put(String key, Uint8List? bytes) {
+  /// Lưu thumbnail vào cache nếu request còn hợp lệ.
+  /// Trả về `true` nếu lưu thành công, `false` nếu request đã bị vô hiệu hóa.
+  bool put(String key, String assetId, int token, Uint8List? bytes) {
+    if (!isRequestValid(key, assetId, token)) {
+      return false;
+    }
     if (_entries.containsKey(key)) {
       _entries.remove(key);
     } else if (_entries.length >= maxEntries) {
@@ -1732,18 +1758,78 @@ class EditorThumbnailCache {
       _entries.remove(oldestKey);
     }
     _entries[key] = bytes;
+    return true;
   }
 
+  /// Vô hiệu hóa một key cụ thể và xóa khỏi cache
   void evict(String key) {
     _entries.remove(key);
+    _keyGenerations[key] = (_keyGenerations[key] ?? 0) + 1;
   }
 
+  /// Vô hiệu hóa và xóa toàn bộ entry liên quan đến [assetId] khi ảnh bị xóa khỏi bản nháp
   void evictByAssetId(String assetId) {
+    _removedAssetIds.add(assetId);
     _entries.removeWhere((k, _) => k.startsWith('$assetId|') || k == assetId);
+    for (final k in _keyGenerations.keys.toList()) {
+      if (k.startsWith('$assetId|') || k == assetId) {
+        _keyGenerations[k] = (_keyGenerations[k] ?? 0) + 1;
+      }
+    }
   }
 
+  /// Khôi phục trạng thái cho assetId nếu được chọn lại
+  void unmarkRemovedAssetId(String assetId) {
+    _removedAssetIds.remove(assetId);
+  }
+
+  /// Dọn sạch toàn bộ cache và vô hiệu hóa tất cả các request đang chạy dở
   void clear() {
     _entries.clear();
+    for (final k in _keyGenerations.keys.toList()) {
+      _keyGenerations[k] = (_keyGenerations[k] ?? 0) + 1;
+    }
+    _removedAssetIds.clear();
+  }
+
+  /// Tạo thumbnail nhỏ gọn (mặc định width 160px) từ mảng bytes thô.
+  /// Nếu ảnh <= 100KB, giữ nguyên.
+  /// Nếu ảnh > 100KB, giải mã và thu nhỏ bằng [ui.instantiateImageCodec].
+  /// Đảm bảo luôn dispose codec và image bằng try/finally.
+  /// Nếu giải mã thất bại, trả về `null` (không âm thầm cache ảnh gốc lớn).
+  @visibleForTesting
+  static Future<Uint8List?> createThumbnailBytes(
+    Uint8List rawBytes, {
+    int targetWidth = 160,
+  }) async {
+    // Nếu ảnh nhỏ (<= 100KB hoặc dummy test bytes), ảnh vốn đã nhỏ gọn
+    if (rawBytes.length <= 100 * 1024) {
+      return rawBytes;
+    }
+
+    ui.Codec? codec;
+    ui.Image? image;
+    try {
+      codec = await ui.instantiateImageCodec(
+        rawBytes,
+        targetWidth: targetWidth,
+      );
+      final frame = await codec.getNextFrame();
+      image = frame.image;
+      final byteData = await image.toByteData(
+        format: ui.ImageByteFormat.png,
+      );
+      if (byteData != null) {
+        return byteData.buffer.asUint8List();
+      }
+      return null;
+    } catch (_) {
+      // Khi giải mã thất bại cho ảnh lớn (>100KB), tuyệt đối không âm thầm trả về ảnh gốc lớn
+      return null;
+    } finally {
+      image?.dispose();
+      codec?.dispose();
+    }
   }
 }
 
@@ -1754,12 +1840,15 @@ class _EditorImageThumbnail extends StatefulWidget {
   final ArticleImageAttachment image;
   final ArticleAssetStore assetStore;
   final EditorThumbnailCache cache;
+  final Future<Uint8List?> Function(ArticleImageAttachment image)?
+      thumbnailLoaderOverride;
 
   const _EditorImageThumbnail({
     super.key,
     required this.image,
     required this.assetStore,
     required this.cache,
+    this.thumbnailLoaderOverride,
   });
 
   @override
@@ -1770,6 +1859,7 @@ class _EditorImageThumbnailState extends State<_EditorImageThumbnail> {
   Uint8List? _bytes;
   bool _isLoading = true;
   bool _hasError = false;
+  int _localLoadId = 0;
 
   @override
   void initState() {
@@ -1793,11 +1883,21 @@ class _EditorImageThumbnailState extends State<_EditorImageThumbnail> {
     }
   }
 
+  @override
+  void dispose() {
+    _localLoadId++; // Invalidate callback cho widget instance này nếu bị unmount
+    super.dispose();
+  }
+
   Future<void> _loadThumbnail() async {
+    final currentLoadId = ++_localLoadId;
     final key = '${widget.image.assetId}|${widget.image.relativePath}';
+    final assetId = widget.image.assetId;
+    final token = widget.cache.beginRequest(key);
+
     final cached = widget.cache.get(key);
     if (cached != null) {
-      if (mounted) {
+      if (mounted && _localLoadId == currentLoadId) {
         setState(() {
           _bytes = cached;
           _isLoading = false;
@@ -1808,12 +1908,44 @@ class _EditorImageThumbnailState extends State<_EditorImageThumbnail> {
     }
 
     try {
-      final file = await widget.assetStore.findExistingFile(
-        assetId: widget.image.assetId,
-        relativePath: widget.image.relativePath,
-      );
-      if (file == null || !await file.exists()) {
-        if (mounted) {
+      Uint8List? thumbBytes;
+      if (widget.thumbnailLoaderOverride != null) {
+        thumbBytes = await widget.thumbnailLoaderOverride!(widget.image);
+      } else {
+        final file = await widget.assetStore.findExistingFile(
+          assetId: widget.image.assetId,
+          relativePath: widget.image.relativePath,
+        );
+        if (!widget.cache.isRequestValid(key, assetId, token)) {
+          return;
+        }
+        if (file == null || !await file.exists()) {
+          if (mounted && _localLoadId == currentLoadId) {
+            setState(() {
+              _isLoading = false;
+              _hasError = true;
+            });
+          }
+          return;
+        }
+
+        final rawBytes = await file.readAsBytes();
+        if (!widget.cache.isRequestValid(key, assetId, token)) {
+          return;
+        }
+
+        thumbBytes =
+            await EditorThumbnailCache.createThumbnailBytes(rawBytes, targetWidth: 160);
+      }
+
+      // Kiểm tra tính hợp lệ trước khi put vào cache và cập nhật widget
+      if (!widget.cache.isRequestValid(key, assetId, token)) {
+        return;
+      }
+
+      // Nếu tạo thumbnail thất bại (thumbBytes == null), không âm thầm cache ảnh gốc lớn!
+      if (thumbBytes == null) {
+        if (mounted && _localLoadId == currentLoadId) {
           setState(() {
             _isLoading = false;
             _hasError = true;
@@ -1822,13 +1954,9 @@ class _EditorImageThumbnailState extends State<_EditorImageThumbnail> {
         return;
       }
 
-      // Đọc bất đồng bộ trên I/O worker (không dùng readAsBytesSync trên UI isolate)
-      final rawBytes = await file.readAsBytes();
-      final thumbBytes = await _createThumbnailBytes(rawBytes, targetWidth: 160);
+      final putOk = widget.cache.put(key, assetId, token, thumbBytes);
 
-      widget.cache.put(key, thumbBytes);
-
-      if (mounted) {
+      if (mounted && _localLoadId == currentLoadId && putOk) {
         setState(() {
           _bytes = thumbBytes;
           _isLoading = false;
@@ -1836,7 +1964,7 @@ class _EditorImageThumbnailState extends State<_EditorImageThumbnail> {
         });
       }
     } catch (_) {
-      if (mounted) {
+      if (mounted && _localLoadId == currentLoadId) {
         setState(() {
           _isLoading = false;
           _hasError = true;
@@ -1845,35 +1973,9 @@ class _EditorImageThumbnailState extends State<_EditorImageThumbnail> {
     }
   }
 
-  static Future<Uint8List> _createThumbnailBytes(
-    Uint8List rawBytes, {
-    int targetWidth = 160,
-  }) async {
-    // Nếu ảnh đã nhỏ (<= 100KB hoặc dummy test bytes), không cần downsample
-    if (rawBytes.length <= 100 * 1024) {
-      return rawBytes;
-    }
-    try {
-      final codec = await ui.instantiateImageCodec(
-        rawBytes,
-        targetWidth: targetWidth,
-      );
-      final frame = await codec.getNextFrame();
-      final byteData = await frame.image.toByteData(
-        format: ui.ImageByteFormat.png,
-      );
-      if (byteData != null) {
-        return byteData.buffer.asUint8List();
-      }
-    } catch (_) {
-      // Mock bytes hoặc codec không giải mã được
-    }
-    return rawBytes;
-  }
-
   @override
   Widget build(BuildContext context) {
-    if (_bytes == null) {
+    if (_bytes == null || _hasError) {
       return Container(
         width: 88.0,
         height: 88.0,

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -1974,6 +1975,262 @@ void main() {
         expect(editorState.thumbnailCacheForTesting.length, 0);
 
         await _closeRepo(tester, repo);
+      },
+    );
+
+    testWidgets(
+      'Thumbnail: Bỏ ảnh khi đang tải chậm -> sau khi hoàn tất tác vụ, cache vẫn không có ảnh',
+      (tester) async {
+        final tempDir = Directory.systemTemp.createTempSync('bida_p4c_cancel_load_');
+        addTearDown(() {
+          try {
+            if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+          } catch (_) {}
+        });
+
+        final assetStore = ArticleAssetStore(
+          directoryProvider: () async => tempDir,
+        );
+        final repo = SqliteNotebookRepository(
+          dbPath: p.join(tempDir.path, 'notebook.db'),
+          assetStore: assetStore,
+        );
+        final controller = NotebookController(repository: repo);
+        await tester.runAsync(() => controller.initialize());
+
+        final res = await tester.runAsync(
+          () => assetStore.stageImageBytes(
+            assetId: 'slow_asset_1',
+            bytes: _validPng1x1(),
+            originalName: 'slow1.png',
+          ),
+        );
+        final saved = await tester.runAsync(
+          () => controller.saveArticle(
+            _makeArticle(
+              title: 'Bài thử bỏ ảnh khi tải',
+              images: [
+                ArticleImageAttachment(
+                  id: 'slow_img_1',
+                  assetId: res!.assetId,
+                  relativePath: res.relativePath,
+                  originalName: 'slow1.png',
+                  mimeType: 'image/png',
+                  sizeBytes: res.sizeBytes,
+                  width: 1,
+                  height: 1,
+                  sortOrder: 0,
+                ),
+              ],
+            ),
+          ),
+        );
+        expect(saved!.isSuccess, isTrue);
+
+        final slowGate = Completer<Uint8List?>();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ArticleEditorScreen(
+              controller: controller,
+              existingArticle: saved.article,
+              thumbnailLoaderOverride: (img) => slowGate.future,
+            ),
+          ),
+        );
+        await tester.pump();
+
+        // Cuộn tới ảnh để kích hoạt tải
+        await _scrollTo(tester, find.byKey(const Key('editor_image_card_0')));
+        await tester.pump();
+
+        final editorState = tester.state<ArticleEditorScreenState>(
+          find.byType(ArticleEditorScreen),
+        );
+        final cache = editorState.thumbnailCacheForTesting;
+        final assetId = saved.article!.images.first.assetId;
+        final cacheKey = '$assetId|${saved.article!.images.first.relativePath}';
+
+        // Người dùng bấm xóa ảnh 0 khi tác vụ tải đang chờ slowGate
+        await _scrollToAndTap(tester, find.byKey(const Key('delete_image_0')));
+        await tester.pumpAndSettle();
+
+        // Tác vụ tải chậm hoàn tất sau khi ảnh đã bị xóa khỏi bản nháp
+        slowGate.complete(Uint8List.fromList([1, 2, 3, 4]));
+        await _flushRealAsync(tester);
+
+        // Xác nhận token vô hiệu hóa chặn ghi lại cache: cache vẫn không có ảnh
+        expect(cache.containsKey(cacheKey), isFalse);
+        expect(cache.length, 0);
+
+        await _closeRepo(tester, repo);
+      },
+    );
+
+    testWidgets(
+      'Thumbnail: Đóng editor khi đang tải chậm -> sau khi hoàn tất tác vụ, cache vẫn rỗng',
+      (tester) async {
+        final tempDir = Directory.systemTemp.createTempSync('bida_p4c_close_load_');
+        addTearDown(() {
+          try {
+            if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+          } catch (_) {}
+        });
+
+        final assetStore = ArticleAssetStore(
+          directoryProvider: () async => tempDir,
+        );
+        final repo = SqliteNotebookRepository(
+          dbPath: p.join(tempDir.path, 'notebook.db'),
+          assetStore: assetStore,
+        );
+        final controller = NotebookController(repository: repo);
+        await tester.runAsync(() => controller.initialize());
+
+        final res = await tester.runAsync(
+          () => assetStore.stageImageBytes(
+            assetId: 'slow_asset_close',
+            bytes: _validPng1x1(),
+            originalName: 'slow_close.png',
+          ),
+        );
+        final saved = await tester.runAsync(
+          () => controller.saveArticle(
+            _makeArticle(
+              title: 'Bài thử đóng editor khi tải',
+              images: [
+                ArticleImageAttachment(
+                  id: 'slow_img_close',
+                  assetId: res!.assetId,
+                  relativePath: res.relativePath,
+                  originalName: 'slow_close.png',
+                  mimeType: 'image/png',
+                  sizeBytes: res.sizeBytes,
+                  width: 1,
+                  height: 1,
+                  sortOrder: 0,
+                ),
+              ],
+            ),
+          ),
+        );
+        expect(saved!.isSuccess, isTrue);
+
+        final slowGate = Completer<Uint8List?>();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ArticleEditorScreen(
+              controller: controller,
+              existingArticle: saved.article,
+              thumbnailLoaderOverride: (img) => slowGate.future,
+            ),
+          ),
+        );
+        await tester.pump();
+
+        // Cuộn tới ảnh để kích hoạt tải
+        await _scrollTo(tester, find.byKey(const Key('editor_image_card_0')));
+        await tester.pump();
+
+        final editorState = tester.state<ArticleEditorScreenState>(
+          find.byType(ArticleEditorScreen),
+        );
+        final cache = editorState.thumbnailCacheForTesting;
+
+        // Đóng editor khi tác vụ tải đang chờ slowGate
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+
+        // Tác vụ tải chậm hoàn tất sau khi editor đã đóng (cache.clear đã gọi)
+        slowGate.complete(Uint8List.fromList([1, 2, 3, 4]));
+        await _flushRealAsync(tester);
+
+        // Xác nhận token vô hiệu hóa chặn ghi lại cache: cache vẫn rỗng
+        expect(cache.length, 0);
+
+        await _closeRepo(tester, repo);
+      },
+    );
+
+    test(
+      'Thumbnail: Ảnh thật >100 KB đi qua nhánh tạo thumbnail và giải phóng codec/image; ảnh hỏng không cache ảnh gốc',
+      () async {
+        // Tạo ảnh thật hợp lệ > 100 KB bằng PictureRecorder (800x800 với nhiều đường vẽ đa màu)
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder);
+        final paint = Paint()..strokeWidth = 2.0;
+        for (var i = 0; i < 800; i += 4) {
+          paint.color = Color.fromARGB(255, (i * 17) % 256, (i * 31) % 256, (i * 47) % 256);
+          canvas.drawLine(Offset(0, i.toDouble()), Offset(800, 800.0 - i), paint);
+          canvas.drawLine(Offset(i.toDouble(), 0), Offset(800.0 - i, 800), paint);
+        }
+        final pic = recorder.endRecording();
+        final uiImg = await pic.toImage(800, 800);
+        final byteData = await uiImg.toByteData(format: ui.ImageByteFormat.png);
+        final rawPngBytes = byteData!.buffer.asUint8List();
+        uiImg.dispose();
+        pic.dispose();
+
+        expect(rawPngBytes.length, greaterThan(100 * 1024), reason: 'Ảnh mẫu phải > 100 KB');
+
+        // Tạo thumbnail qua EditorThumbnailCache.createThumbnailBytes
+        final thumbBytes = await EditorThumbnailCache.createThumbnailBytes(
+          rawPngBytes,
+          targetWidth: 160,
+        );
+        expect(thumbBytes, isNotNull);
+        expect(thumbBytes!.length, lessThan(rawPngBytes.length));
+
+        // Ảnh lỗi > 100 KB: không âm thầm cache ảnh gốc lớn, trả về null
+        final corruptedBytes = Uint8List(120 * 1024); // 120 KB dữ liệu rác không phải ảnh hợp lệ
+        final failThumb = await EditorThumbnailCache.createThumbnailBytes(
+          corruptedBytes,
+          targetWidth: 160,
+        );
+        expect(
+          failThumb,
+          isNull,
+          reason: 'Khi giải mã thất bại cho ảnh lớn >100KB, tuyệt đối không được âm thầm trả về ảnh gốc lớn',
+        );
+      },
+    );
+
+    test(
+      'Thumbnail: Giới hạn LRU cache khi vượt 20 mục và thứ tự eviction',
+      () {
+        final cache = EditorThumbnailCache(maxEntries: 20);
+
+        // Thêm 20 mục
+        for (var i = 0; i < 20; i++) {
+          final key = 'key_$i';
+          final token = cache.beginRequest(key);
+          final ok = cache.put(key, 'asset_$i', token, Uint8List.fromList([i]));
+          expect(ok, isTrue);
+        }
+        expect(cache.length, 20);
+        expect(cache.containsKey('key_0'), isTrue);
+
+        // Truy cập key_0 để key_0 thành most recently used
+        final v0 = cache.get('key_0');
+        expect(v0, isNotNull);
+
+        // Thêm mục thứ 21 (key_20) -> mục cũ nhất hiện tại (key_1) bị evict, key_0 vẫn còn
+        final token20 = cache.beginRequest('key_20');
+        final ok20 = cache.put('key_20', 'asset_20', token20, Uint8List.fromList([20]));
+        expect(ok20, isTrue);
+        expect(cache.length, 20);
+        expect(cache.containsKey('key_1'), isFalse, reason: 'key_1 cũ nhất phải bị evict');
+        expect(cache.containsKey('key_0'), isTrue, reason: 'key_0 vừa được truy cập nên được giữ lại');
+        expect(cache.containsKey('key_20'), isTrue);
+
+        // Thêm tiếp 5 mục nữa (key_21 .. key_25)
+        for (var i = 21; i <= 25; i++) {
+          final key = 'key_$i';
+          final t = cache.beginRequest(key);
+          cache.put(key, 'asset_$i', t, Uint8List.fromList([i]));
+        }
+        expect(cache.length, 20, reason: 'Cache luôn duy trì giới hạn tối đa 20 mục');
       },
     );
   });
