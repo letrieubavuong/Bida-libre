@@ -1,5 +1,6 @@
 import 'dart:math';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -33,10 +34,10 @@ class ArticleEditorScreen extends StatefulWidget {
   });
 
   @override
-  State<ArticleEditorScreen> createState() => _ArticleEditorScreenState();
+  State<ArticleEditorScreen> createState() => ArticleEditorScreenState();
 }
 
-class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
+class ArticleEditorScreenState extends State<ArticleEditorScreen> {
   static final DateTime _draftSentinelTimestamp =
       DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
 
@@ -57,25 +58,13 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
   bool _isImportingImages = false;
   bool _isDisposed = false;
 
-  /// Cache bytes thumbnail theo assetId|relativePath. Đọc bytes rồi đóng handle
-  /// ngay, tránh Image.file giữ khóa tệp (Windows) khi promote/xóa tài nguyên.
-  final Map<String, Future<Uint8List?>> _thumbBytesCache = {};
+  /// Cache thumbnail LRU với giới hạn dung lượng/số mục rõ ràng.
+  /// Đọc bất đồng bộ và đóng file handle ngay lập tức (không giữ khóa tệp trên Windows).
+  /// Giải phóng khi bỏ ảnh hoặc khi đóng editor.
+  final EditorThumbnailCache _thumbnailCache = EditorThumbnailCache(maxEntries: 20);
 
-  Future<Uint8List?> _thumbBytesFor(ArticleImageAttachment image) {
-    final key = '${image.assetId}|${image.relativePath}';
-    return _thumbBytesCache.putIfAbsent(key, () async {
-      try {
-        final file = await widget.controller.assetStore.findExistingFile(
-          assetId: image.assetId,
-          relativePath: image.relativePath,
-        );
-        // Đọc đồng bộ: mở-đọc-đóng handle ngay, không tạo thêm I/O bất đồng bộ.
-        return file?.readAsBytesSync();
-      } catch (_) {
-        return null;
-      }
-    });
-  }
+  @visibleForTesting
+  EditorThumbnailCache get thumbnailCacheForTesting => _thumbnailCache;
 
   bool get _isBusy => widget.controller.isSaving || _isImportingImages;
 
@@ -199,6 +188,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
 
   @override
   void dispose() {
+    _thumbnailCache.clear();
     for (final c in _fixedTextControllers) {
       c.removeListener(_onFormFieldChanged);
       c.dispose();
@@ -731,6 +721,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
       cap.removeListener(_onFormFieldChanged);
       cap.dispose();
     });
+    _thumbnailCache.evictByAssetId(removed.assetId);
     final stillUsed = _images.any((i) => i.assetId == removed.assetId);
     if (!stillUsed && _newlyStagedAssetIds.contains(removed.assetId)) {
       _newlyStagedAssetIds.remove(removed.assetId);
@@ -857,840 +848,1061 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                 const SizedBox(width: 8.0),
               ],
             ),
-            body: ListView(
+            body: ListView.builder(
               padding: const EdgeInsets.all(16.0),
-              children: [
-                Text(
-                  'Thông tin chung',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
-                const SizedBox(height: 8.0),
-                Wrap(
-                  spacing: 8.0,
-                  children: ArticleKind.values.map((k) {
-                    return ChoiceChip(
-                      key: Key('kind_chip_${k.storageKey}'),
-                      label: Text(k.label),
-                      selected: _kind == k,
-                      onSelected: saving
-                          ? null
-                          : (_) {
-                              setState(() {
-                                _kind = k;
-                                final newGroups =
-                                    widget.controller.groupsForKind(k);
-                                _primaryGroupId = newGroups.isNotEmpty
-                                    ? newGroups.first.id
-                                    : DefaultEditorialGroups.unclassifiedIdFor(k);
-                              });
-                            },
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 12.0),
-                TextField(
-                  key: const Key('article_title_input'),
-                  controller: _titleCtrl,
-                  enabled: !saving,
-                  decoration: const InputDecoration(
-                    labelText: 'Tên bài viết *',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 10.0),
-                TextField(
-                  key: const Key('article_summary_input'),
-                  controller: _summaryCtrl,
-                  enabled: !saving,
-                  maxLines: 2,
-                  decoration: const InputDecoration(
-                    labelText: 'Mô tả ngắn',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 10.0),
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        key: const Key('article_group_dropdown'),
-                        isExpanded: true,
-                        initialValue: groups.any((g) => g.id == _primaryGroupId)
-                            ? _primaryGroupId
-                            : null,
-                        decoration: const InputDecoration(
-                          labelText: 'Nhóm chính',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                        items: groups
-                            .map(
-                              (g) => DropdownMenuItem(
-                                value: g.id,
-                                child: Text(
-                                  g.name,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            )
-                            .toList(),
-                        onChanged: saving
-                            ? null
-                            : (val) {
-                                if (val != null) {
-                                  setState(() => _primaryGroupId = val);
-                                }
-                              },
-                      ),
-                    ),
-                    const SizedBox(width: 8.0),
-                    Expanded(
-                      child: DropdownButtonFormField<Difficulty>(
-                        key: const Key('article_difficulty_dropdown'),
-                        isExpanded: true,
-                        initialValue: _difficulty,
-                        decoration: const InputDecoration(
-                          labelText: 'Độ khó',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                        items: Difficulty.values
-                            .map(
-                              (d) => DropdownMenuItem(
-                                value: d,
-                                child: Text(
-                                  d.label,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            )
-                            .toList(),
-                        onChanged: saving
-                            ? null
-                            : (val) {
-                                if (val != null) {
-                                  setState(() => _difficulty = val);
-                                }
-                              },
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 12.0),
-                const Text(
-                  'Thẻ (tùy chọn)',
-                  style: TextStyle(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 6.0),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        key: const Key('tag_input'),
-                        controller: _tagInputCtrl,
-                        enabled: !saving,
-                        decoration: const InputDecoration(
-                          labelText: 'Thêm thẻ (vd: cu-lê, trô kéo)',
-                          isDense: true,
-                          border: OutlineInputBorder(),
-                        ),
-                        onSubmitted: saving ? null : _addTag,
-                      ),
-                    ),
-                    const SizedBox(width: 8.0),
-                    FilledButton.tonal(
-                      key: const Key('add_tag_button'),
-                      onPressed:
-                          saving ? null : () => _addTag(_tagInputCtrl.text),
-                      child: const Text('Thêm'),
-                    ),
-                  ],
-                ),
-                if (_tags.isNotEmpty) ...[
-                  const SizedBox(height: 8.0),
-                  Wrap(
-                    spacing: 6.0,
-                    runSpacing: 4.0,
-                    children: [
-                      for (var i = 0; i < _tags.length; i++)
-                        InputChip(
-                          key: Key('article_tag_chip_$i'),
-                          label: Text(_tags[i]),
-                          onDeleted: saving ? null : () => _removeTag(i),
-                        ),
-                    ],
-                  ),
-                ],
-                Builder(
-                  builder: (context) {
-                    final activeKeys = _tags
-                        .map(VietnameseSearchNormalizer.tagDuplicateKey)
-                        .toSet();
-                    final suggestions = widget.controller
-                        .suggestTags(_tagInputCtrl.text)
-                        .where(
-                          (s) => !activeKeys.contains(
-                            VietnameseSearchNormalizer.tagDuplicateKey(s),
-                          ),
-                        )
-                        .take(8)
-                        .toList(growable: false);
-                    if (suggestions.isEmpty) return const SizedBox.shrink();
-                    return Padding(
-                      padding: const EdgeInsets.only(top: 6.0),
-                      child: Wrap(
-                        spacing: 6.0,
-                        runSpacing: 4.0,
-                        children: [
-                          for (final sug in suggestions)
-                            ActionChip(
-                              label: Text('+ $sug'),
-                              onPressed: saving ? null : () => _addTag(sug),
-                            ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-
-                const Divider(height: 32.0),
-                Text(
-                  'Nội dung bài viết',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
-                const SizedBox(height: 8.0),
-                TextField(
-                  key: const Key('article_goal_input'),
-                  controller: _goalCtrl,
-                  enabled: !saving,
-                  maxLines: 2,
-                  decoration: const InputDecoration(
-                    labelText: 'Mục tiêu & Tình huống áp dụng',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 10.0),
-                TextField(
-                  key: const Key('article_content_input'),
-                  controller: _contentCtrl,
-                  enabled: !saving,
-                  maxLines: 4,
-                  decoration: const InputDecoration(
-                    labelText: 'Nội dung giải thích',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12.0),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text(
-                      'Các bước thực hiện',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    TextButton.icon(
-                      key: const Key('add_step_button'),
-                      onPressed: saving
-                          ? null
-                          : () {
-                              setState(() {
-                                _stepControllers.add(
-                                  TextEditingController()
-                                    ..addListener(_onFormFieldChanged),
-                                );
-                              });
-                            },
-                      icon: const Icon(Icons.add),
-                      label: const Text('Thêm bước'),
-                    ),
-                  ],
-                ),
-                for (var i = 0; i < _stepControllers.length; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8.0),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            key: Key('step_input_$i'),
-                            controller: _stepControllers[i],
-                            enabled: !saving,
-                            decoration: InputDecoration(
-                              labelText: 'Bước ${i + 1}',
-                              isDense: true,
-                              border: const OutlineInputBorder(),
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: 'Xóa bước',
-                          icon: const Icon(Icons.close),
-                          onPressed: saving
-                              ? null
-                              : () {
-                                  setState(() {
-                                    final c = _stepControllers.removeAt(i);
-                                    c.removeListener(_onFormFieldChanged);
-                                    c.dispose();
-                                  });
-                                },
-                        ),
-                      ],
-                    ),
-                  ),
-                const SizedBox(height: 8.0),
-                TextField(
-                  key: const Key('article_mistakes_input'),
-                  controller: _mistakesCtrl,
-                  enabled: !saving,
-                  maxLines: 2,
-                  decoration: const InputDecoration(
-                    labelText: 'Lưu ý / Lỗi thường gặp',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-
-                const Divider(height: 32.0),
-                Text(
-                  'Thông số cách đánh (Tĩnh)',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
-                const SizedBox(height: 4.0),
-                Text(
-                  'Chỉ ghi chú thông số kỹ thuật tĩnh; không tự sửa vị trí bi hoặc đường trên sơ đồ.',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                const SizedBox(height: 10.0),
-                const Text('Bi chủ', style: TextStyle(fontWeight: FontWeight.w600)),
-                const SizedBox(height: 6.0),
-                Wrap(
-                  spacing: 6.0,
-                  children: const [
-                    ('ball_white', 'Bi trắng'),
-                    ('ball_yellow', 'Bi vàng'),
-                    ('ball_red', 'Bi đỏ'),
-                  ].map((e) {
-                    return ChoiceChip(
-                      key: Key('stroke_cue_${e.$1}'),
-                      label: Text(e.$2),
-                      selected: _stroke.cueBallId == e.$1,
-                      onSelected: saving
-                          ? null
-                          : (_) => setState(
-                                () => _stroke = _stroke.copyWith(cueBallId: e.$1),
-                              ),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 10.0),
-                const Text('Độ dày chạm', style: TextStyle(fontWeight: FontWeight.w600)),
-                const SizedBox(height: 6.0),
-                Wrap(
-                  spacing: 6.0,
-                  children: HitThicknessMode.values.map((m) {
-                    return ChoiceChip(
-                      key: Key('stroke_mode_${m.storageKey}'),
-                      label: Text(m.displayName),
-                      selected: _stroke.thicknessMode == m,
-                      onSelected: saving
-                          ? null
-                          : (_) => setState(
-                                () => _stroke = _stroke.copyWith(thicknessMode: m),
-                              ),
-                    );
-                  }).toList(),
-                ),
-                if (_stroke.thicknessMode == HitThicknessMode.eighths) ...[
-                  const SizedBox(height: 8.0),
-                  Wrap(
-                    spacing: 6.0,
-                    children: List.generate(8, (idx) {
-                      final k = idx + 1;
-                      return ChoiceChip(
-                        key: Key('stroke_eighth_$k'),
-                        label: Text('$k/8'),
-                        selected: _stroke.eighthCount == k,
-                        onSelected: saving
-                            ? null
-                            : (_) => setState(
-                                  () => _stroke = _stroke.copyWith(eighthCount: k),
-                                ),
-                      );
-                    }),
-                  ),
-                ] else if (_stroke.thicknessMode == HitThicknessMode.exact) ...[
-                  const SizedBox(height: 8.0),
-                  TextField(
-                    key: const Key('stroke_exact_thickness_input'),
-                    controller: _exactThickCtrl,
-                    enabled: !saving,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: InputDecoration(
-                      labelText: 'Giá trị chạm chính xác (0 đến 1, vd: 0.45)',
-                      errorText: _exactThicknessError,
-                      isDense: true,
-                      border: const OutlineInputBorder(),
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 8.0),
-                SwitchListTile(
-                  key: const Key('stroke_full_face_switch'),
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Tràn mặt'),
-                  subtitle: const Text(
-                    'Bật/tắt tràn mặt vẫn giữ nguyên tỷ lệ và má chạm đã chọn trước đó.',
-                  ),
-                  value: _stroke.isFullFace,
-                  onChanged: saving
-                      ? null
-                      : (v) => setState(
-                            () => _stroke = _stroke.copyWith(isFullFace: v),
-                          ),
-                ),
-                Wrap(
-                  spacing: 6.0,
-                  children: HitSide.values.map((side) {
-                    return ChoiceChip(
-                      key: Key('stroke_side_${side.storageKey}'),
-                      label: Text(side.displayName),
-                      selected: _stroke.hitSide == side,
-                      onSelected: saving
-                          ? null
-                          : (_) => setState(
-                                () => _stroke = _stroke.copyWith(hitSide: side),
-                              ),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 10.0),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        key: const Key('stroke_tip_x_input'),
-                        controller: _tipXCtrl,
-                        enabled: !saving,
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                          signed: true,
-                        ),
-                        decoration: InputDecoration(
-                          labelText: 'Mũi cơ X (mm, + phải / - trái)',
-                          errorText: _tipXError,
-                          isDense: true,
-                          border: const OutlineInputBorder(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8.0),
-                    Expanded(
-                      child: TextField(
-                        key: const Key('stroke_tip_z_input'),
-                        controller: _tipZCtrl,
-                        enabled: !saving,
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                          signed: true,
-                        ),
-                        decoration: InputDecoration(
-                          labelText: 'Mũi cơ Z (mm, + trên / - dưới)',
-                          errorText: _tipZError,
-                          isDense: true,
-                          border: const OutlineInputBorder(),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6.0),
-                Builder(
-                  builder: (context) {
-                    final parsedX = _tryParseFiniteDouble(_tipXCtrl.text);
-                    final parsedZ = _tryParseFiniteDouble(_tipZCtrl.text);
-                    final xLabel = parsedX == null
-                        ? 'Chờ số hợp lệ'
-                        : CueTipConvention.describeAxisOffset(
-                            parsedX,
-                            positiveLabel: 'Phải',
-                            negativeLabel: 'Trái',
-                          );
-                    final zLabel = parsedZ == null
-                        ? 'Chờ số hợp lệ'
-                        : CueTipConvention.describeAxisOffset(
-                            parsedZ,
-                            positiveLabel: 'Trên',
-                            negativeLabel: 'Dưới',
-                          );
-                    return Text(
-                      'Quy ước 4 mức biên tập: Ngang $xLabel • Dọc $zLabel',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    );
-                  },
-                ),
-                const SizedBox(height: 8.0),
-                Wrap(
-                  spacing: 6.0,
-                  children: CueTipConvention.standardTipDiametersMm.map((d) {
-                    return ChoiceChip(
-                      label: Text('Đầu cơ $d mm'),
-                      selected: (_stroke.tipDiameterMm - d).abs() < 0.01,
-                      onSelected: saving
-                          ? null
-                          : (_) => setState(
-                                () => _stroke = _stroke.copyWith(tipDiameterMm: d),
-                              ),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 8.0),
-                TextField(
-                  key: const Key('stroke_force_input'),
-                  controller: _forceCtrl,
-                  enabled: !saving,
-                  decoration: const InputDecoration(
-                    labelText: 'Lực đánh (văn bản, ví dụ: vừa đủ về)',
-                    isDense: true,
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 8.0),
-                TextField(
-                  key: const Key('stroke_style_input'),
-                  controller: _styleCtrl,
-                  enabled: !saving,
-                  decoration: const InputDecoration(
-                    labelText: 'Kiểu ra cơ (văn bản)',
-                    isDense: true,
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-
-                const Divider(height: 32.0),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Sơ đồ gắn với bài (${_diagrams.length})',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                    ),
-                    FilledButton.tonalIcon(
-                      key: const Key('add_diagram_button'),
-                      onPressed: saving ? null : _addDiagram,
-                      icon: const Icon(Icons.add_box_outlined),
-                      label: const Text('Thêm sơ đồ'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8.0),
-                for (var i = 0; i < _diagrams.length; i++)
-                  Card(
-                    key: Key('editor_diagram_card_$i'),
-                    margin: const EdgeInsets.only(bottom: 12.0),
-                    child: Padding(
-                      padding: const EdgeInsets.all(12.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Row(
-                            children: [
-                              Text(
-                                'Sơ đồ ${i + 1}',
-                                style: const TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                              const Spacer(),
-                              IconButton(
-                                key: Key('diagram_up_$i'),
-                                tooltip: 'Đưa lên',
-                                icon: const Icon(Icons.arrow_upward),
-                                onPressed: (saving || i == 0)
-                                    ? null
-                                    : () => _moveDiagram(i, -1),
-                              ),
-                              IconButton(
-                                key: Key('diagram_down_$i'),
-                                tooltip: 'Đưa xuống',
-                                icon: const Icon(Icons.arrow_downward),
-                                onPressed:
-                                    (saving || i == _diagrams.length - 1)
-                                        ? null
-                                        : () => _moveDiagram(i, 1),
-                              ),
-                              IconButton(
-                                key: Key('delete_diagram_$i'),
-                                tooltip: 'Xóa sơ đồ',
-                                icon: const Icon(Icons.delete_outline),
-                                onPressed:
-                                    saving ? null : () => _removeDiagram(i),
-                              ),
-                            ],
-                          ),
-                          Center(
-                            child: SizedBox(
-                              height: 220.0,
-                              child: BilliardTableReadOnlyView(
-                                scene: _diagrams[i].scene,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 8.0),
-                          TextField(
-                            key: Key('diagram_caption_input_$i'),
-                            controller: _diagramCaptionControllers[i],
-                            enabled: !saving,
-                            decoration: const InputDecoration(
-                              labelText: 'Chú thích sơ đồ',
-                              isDense: true,
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                          const SizedBox(height: 8.0),
-                          OutlinedButton.icon(
-                            key: Key('edit_diagram_$i'),
-                            onPressed: saving ? null : () => _editDiagram(i),
-                            icon: const Icon(Icons.edit_location_alt_outlined),
-                            label: const Text('Mở trình dựng sơ đồ'),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                const Divider(height: 32.0),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Ảnh đính kèm (${_images.length})',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                    ),
-                    FilledButton.tonalIcon(
-                      key: const Key('add_image_button'),
-                      onPressed: busy ? null : _pickImages,
-                      icon: _isImportingImages
-                          ? const SizedBox(
-                              width: 16.0,
-                              height: 16.0,
-                              child: CircularProgressIndicator(strokeWidth: 2.0),
-                            )
-                          : const Icon(Icons.add_photo_alternate_outlined),
-                      label: Text(
-                        _isImportingImages ? 'Đang xử lý...' : 'Thêm ảnh',
-                      ),
-                    ),
-                  ],
-                ),
-                if (_isImportingImages) ...[
-                  const SizedBox(height: 8.0),
-                  const LinearProgressIndicator(
-                    key: Key('importing_images_banner'),
-                  ),
-                ],
-                const SizedBox(height: 8.0),
-                for (var i = 0; i < _images.length; i++)
-                  Card(
-                    key: Key('editor_image_card_$i'),
-                    margin: const EdgeInsets.only(bottom: 12.0),
-                    child: Padding(
-                      padding: const EdgeInsets.all(12.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Row(
-                            children: [
-                              Text(
-                                'Ảnh ${i + 1}',
-                                style: const TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                              const Spacer(),
-                              IconButton(
-                                key: Key('image_up_$i'),
-                                tooltip: 'Đưa lên',
-                                icon: const Icon(Icons.arrow_upward),
-                                onPressed: (busy || i == 0)
-                                    ? null
-                                    : () => _moveImage(i, -1),
-                              ),
-                              IconButton(
-                                key: Key('image_down_$i'),
-                                tooltip: 'Đưa xuống',
-                                icon: const Icon(Icons.arrow_downward),
-                                onPressed:
-                                    (busy || i == _images.length - 1)
-                                        ? null
-                                        : () => _moveImage(i, 1),
-                              ),
-                              IconButton(
-                                key: Key('delete_image_$i'),
-                                tooltip: 'Xóa ảnh',
-                                icon: const Icon(Icons.delete_outline),
-                                onPressed:
-                                    busy ? null : () => _removeImage(i),
-                              ),
-                            ],
-                          ),
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              FutureBuilder<Uint8List?>(
-                                future: _thumbBytesFor(_images[i]),
-                                builder: (context, snapshot) {
-                                  final bytes = snapshot.data;
-                                  if (bytes == null) {
-                                    return Container(
-                                      width: 88.0,
-                                      height: 88.0,
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .surfaceContainerHighest,
-                                      alignment: Alignment.center,
-                                      child: const Icon(
-                                        Icons.broken_image_outlined,
-                                      ),
-                                    );
-                                  }
-                                  return ClipRRect(
-                                    borderRadius: BorderRadius.circular(6.0),
-                                    child: Image.memory(
-                                      bytes,
-                                      width: 88.0,
-                                      height: 88.0,
-                                      cacheWidth: 160,
-                                      fit: BoxFit.cover,
-                                      errorBuilder: (_, _, _) => Container(
-                                        width: 88.0,
-                                        height: 88.0,
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .surfaceContainerHighest,
-                                        alignment: Alignment.center,
-                                        child: const Icon(
-                                          Icons.broken_image_outlined,
-                                        ),
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                              const SizedBox(width: 12.0),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      _images[i].originalName,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4.0),
-                                    Text(
-                                      '${_images[i].width ?? '?'}×${_images[i].height ?? '?'} · '
-                                      '${(_images[i].sizeBytes / 1024).toStringAsFixed(1)} KB',
-                                      style:
-                                          Theme.of(context).textTheme.bodySmall,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8.0),
-                          TextField(
-                            key: Key('image_caption_input_$i'),
-                            controller: _imageCaptionControllers[i],
-                            enabled: !saving,
-                            decoration: const InputDecoration(
-                              labelText: 'Chú thích ảnh',
-                              isDense: true,
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                const Divider(height: 32.0),
-                Text(
-                  'Nguồn tài liệu (tùy chọn)',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
-                const SizedBox(height: 8.0),
-                TextField(
-                  key: const Key('article_source_input'),
-                  controller: _sourceCtrl,
-                  enabled: !saving,
-                  decoration: const InputDecoration(
-                    labelText: 'Tên nguồn / Sách',
-                    isDense: true,
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 8.0),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        key: const Key('article_author_input'),
-                        controller: _authorCtrl,
-                        enabled: !saving,
-                        decoration: const InputDecoration(
-                          labelText: 'Tác giả',
-                          isDense: true,
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8.0),
-                    Expanded(
-                      child: TextField(
-                        key: const Key('article_source_page_input'),
-                        controller: _sourcePageCtrl,
-                        enabled: !saving,
-                        decoration: const InputDecoration(
-                          labelText: 'Số trang',
-                          isDense: true,
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8.0),
-                TextField(
-                  key: const Key('article_source_url_input'),
-                  controller: _sourceUrlCtrl,
-                  enabled: !saving,
-                  keyboardType: TextInputType.url,
-                  decoration: InputDecoration(
-                    labelText: 'Liên kết nguồn (http:// hoặc https://)',
-                    errorText: _sourceUrlError,
-                    isDense: true,
-                    border: const OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 24.0),
-              ],
+              itemCount: 7 + _images.length,
+              itemBuilder: (context, index) {
+                if (index == 0) {
+                  return _buildGeneralInfoSection(groups, saving);
+                } else if (index == 1) {
+                  return _buildContentSection(saving);
+                } else if (index == 2) {
+                  return _buildCueSection(saving);
+                } else if (index == 3) {
+                  return _buildDiagramsSection(saving);
+                } else if (index == 4) {
+                  return _buildImagesHeader(busy);
+                } else if (index < 5 + _images.length) {
+                  final imgIndex = index - 5;
+                  return _buildImageCard(imgIndex, busy, saving);
+                } else if (index == 5 + _images.length) {
+                  return _buildSourceSection(saving);
+                } else {
+                  return const SizedBox(height: 24.0);
+                }
+              },
             ),
           ),
         );
       },
+    );
+  }
+
+  Widget _buildGeneralInfoSection(List<EditorialGroup> groups, bool saving) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Thông tin chung',
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+        ),
+        const SizedBox(height: 8.0),
+        Wrap(
+          spacing: 8.0,
+          children: ArticleKind.values.map((k) {
+            return ChoiceChip(
+              key: Key('kind_chip_${k.storageKey}'),
+              label: Text(k.label),
+              selected: _kind == k,
+              onSelected: saving
+                  ? null
+                  : (_) {
+                      setState(() {
+                        _kind = k;
+                        final newGroups = widget.controller.groupsForKind(k);
+                        _primaryGroupId = newGroups.isNotEmpty
+                            ? newGroups.first.id
+                            : DefaultEditorialGroups.unclassifiedIdFor(k);
+                      });
+                    },
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 12.0),
+        TextField(
+          key: const Key('article_title_input'),
+          controller: _titleCtrl,
+          enabled: !saving,
+          decoration: const InputDecoration(
+            labelText: 'Tên bài viết *',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 10.0),
+        TextField(
+          key: const Key('article_summary_input'),
+          controller: _summaryCtrl,
+          enabled: !saving,
+          maxLines: 2,
+          decoration: const InputDecoration(
+            labelText: 'Mô tả ngắn',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 10.0),
+        Row(
+          children: [
+            Expanded(
+              child: DropdownButtonFormField<String>(
+                key: const Key('article_group_dropdown'),
+                isExpanded: true,
+                initialValue: groups.any((g) => g.id == _primaryGroupId)
+                    ? _primaryGroupId
+                    : null,
+                decoration: const InputDecoration(
+                  labelText: 'Nhóm chính',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                items: groups
+                    .map(
+                      (g) => DropdownMenuItem(
+                        value: g.id,
+                        child: Text(
+                          g.name,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: saving
+                    ? null
+                    : (val) {
+                        if (val != null) {
+                          setState(() => _primaryGroupId = val);
+                        }
+                      },
+              ),
+            ),
+            const SizedBox(width: 8.0),
+            Expanded(
+              child: DropdownButtonFormField<Difficulty>(
+                key: const Key('article_difficulty_dropdown'),
+                isExpanded: true,
+                initialValue: _difficulty,
+                decoration: const InputDecoration(
+                  labelText: 'Độ khó',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                items: Difficulty.values
+                    .map(
+                      (d) => DropdownMenuItem(
+                        value: d,
+                        child: Text(
+                          d.label,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: saving
+                    ? null
+                    : (val) {
+                        if (val != null) {
+                          setState(() => _difficulty = val);
+                        }
+                      },
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12.0),
+        const Text(
+          'Thẻ (tùy chọn)',
+          style: TextStyle(fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 6.0),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                key: const Key('tag_input'),
+                controller: _tagInputCtrl,
+                enabled: !saving,
+                decoration: const InputDecoration(
+                  labelText: 'Thêm thẻ (vd: cu-lê, trô kéo)',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+                onSubmitted: saving ? null : _addTag,
+              ),
+            ),
+            const SizedBox(width: 8.0),
+            FilledButton.tonal(
+              key: const Key('add_tag_button'),
+              onPressed: saving ? null : () => _addTag(_tagInputCtrl.text),
+              child: const Text('Thêm'),
+            ),
+          ],
+        ),
+        if (_tags.isNotEmpty) ...[
+          const SizedBox(height: 8.0),
+          Wrap(
+            spacing: 6.0,
+            runSpacing: 4.0,
+            children: [
+              for (var i = 0; i < _tags.length; i++)
+                InputChip(
+                  key: Key('article_tag_chip_$i'),
+                  label: Text(_tags[i]),
+                  onDeleted: saving ? null : () => _removeTag(i),
+                ),
+            ],
+          ),
+        ],
+        Builder(
+          builder: (context) {
+            final activeKeys = _tags
+                .map(VietnameseSearchNormalizer.tagDuplicateKey)
+                .toSet();
+            final suggestions = widget.controller
+                .suggestTags(_tagInputCtrl.text)
+                .where(
+                  (s) => !activeKeys.contains(
+                    VietnameseSearchNormalizer.tagDuplicateKey(s),
+                  ),
+                )
+                .take(8)
+                .toList(growable: false);
+            if (suggestions.isEmpty) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.only(top: 6.0),
+              child: Wrap(
+                spacing: 6.0,
+                runSpacing: 4.0,
+                children: [
+                  for (final sug in suggestions)
+                    ActionChip(
+                      label: Text('+ $sug'),
+                      onPressed: saving ? null : () => _addTag(sug),
+                    ),
+                ],
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildContentSection(bool saving) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Divider(height: 32.0),
+        Text(
+          'Nội dung bài viết',
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+        ),
+        const SizedBox(height: 8.0),
+        TextField(
+          key: const Key('article_goal_input'),
+          controller: _goalCtrl,
+          enabled: !saving,
+          maxLines: 2,
+          decoration: const InputDecoration(
+            labelText: 'Mục tiêu & Tình huống áp dụng',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 10.0),
+        TextField(
+          key: const Key('article_content_input'),
+          controller: _contentCtrl,
+          enabled: !saving,
+          maxLines: 4,
+          decoration: const InputDecoration(
+            labelText: 'Nội dung giải thích',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12.0),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              'Các bước thực hiện',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            TextButton.icon(
+              key: const Key('add_step_button'),
+              onPressed: saving
+                  ? null
+                  : () {
+                      setState(() {
+                        _stepControllers.add(
+                          TextEditingController()
+                            ..addListener(_onFormFieldChanged),
+                        );
+                      });
+                    },
+              icon: const Icon(Icons.add),
+              label: const Text('Thêm bước'),
+            ),
+          ],
+        ),
+        for (var i = 0; i < _stepControllers.length; i++)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8.0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: Key('step_input_$i'),
+                    controller: _stepControllers[i],
+                    enabled: !saving,
+                    decoration: InputDecoration(
+                      labelText: 'Bước ${i + 1}',
+                      isDense: true,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Xóa bước',
+                  icon: const Icon(Icons.close),
+                  onPressed: saving
+                      ? null
+                      : () {
+                          setState(() {
+                            final c = _stepControllers.removeAt(i);
+                            c.removeListener(_onFormFieldChanged);
+                            c.dispose();
+                          });
+                        },
+                ),
+              ],
+            ),
+          ),
+        const SizedBox(height: 8.0),
+        TextField(
+          key: const Key('article_mistakes_input'),
+          controller: _mistakesCtrl,
+          enabled: !saving,
+          maxLines: 2,
+          decoration: const InputDecoration(
+            labelText: 'Lưu ý / Lỗi thường gặp',
+            border: OutlineInputBorder(),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCueSection(bool saving) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Divider(height: 32.0),
+        Text(
+          'Thông số cách đánh (Tĩnh)',
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+        ),
+        const SizedBox(height: 4.0),
+        Text(
+          'Chỉ ghi chú thông số kỹ thuật tĩnh; không tự sửa vị trí bi hoặc đường trên sơ đồ.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 10.0),
+        const Text('Bi chủ', style: TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 6.0),
+        Wrap(
+          spacing: 6.0,
+          children: const [
+            ('ball_white', 'Bi trắng'),
+            ('ball_yellow', 'Bi vàng'),
+            ('ball_red', 'Bi đỏ'),
+          ].map((e) {
+            return ChoiceChip(
+              key: Key('stroke_cue_${e.$1}'),
+              label: Text(e.$2),
+              selected: _stroke.cueBallId == e.$1,
+              onSelected: saving
+                  ? null
+                  : (_) => setState(
+                        () => _stroke = _stroke.copyWith(cueBallId: e.$1),
+                      ),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 10.0),
+        const Text('Độ dày chạm', style: TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 6.0),
+        Wrap(
+          spacing: 6.0,
+          children: HitThicknessMode.values.map((m) {
+            return ChoiceChip(
+              key: Key('stroke_mode_${m.storageKey}'),
+              label: Text(m.displayName),
+              selected: _stroke.thicknessMode == m,
+              onSelected: saving
+                  ? null
+                  : (_) => setState(
+                        () => _stroke = _stroke.copyWith(thicknessMode: m),
+                      ),
+            );
+          }).toList(),
+        ),
+        if (_stroke.thicknessMode == HitThicknessMode.eighths) ...[
+          const SizedBox(height: 8.0),
+          Wrap(
+            spacing: 6.0,
+            children: List.generate(8, (idx) {
+              final k = idx + 1;
+              return ChoiceChip(
+                key: Key('stroke_eighth_$k'),
+                label: Text('$k/8'),
+                selected: _stroke.eighthCount == k,
+                onSelected: saving
+                    ? null
+                    : (_) => setState(
+                          () => _stroke = _stroke.copyWith(eighthCount: k),
+                        ),
+              );
+            }),
+          ),
+        ] else if (_stroke.thicknessMode == HitThicknessMode.exact) ...[
+          const SizedBox(height: 8.0),
+          TextField(
+            key: const Key('stroke_exact_thickness_input'),
+            controller: _exactThickCtrl,
+            enabled: !saving,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(
+              labelText: 'Giá trị chạm chính xác (0 đến 1, vd: 0.45)',
+              errorText: _exactThicknessError,
+              isDense: true,
+              border: const OutlineInputBorder(),
+            ),
+          ),
+        ],
+        const SizedBox(height: 8.0),
+        SwitchListTile(
+          key: const Key('stroke_full_face_switch'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Tràn mặt'),
+          subtitle: const Text(
+            'Bật/tắt tràn mặt vẫn giữ nguyên tỷ lệ và má chạm đã chọn trước đó.',
+          ),
+          value: _stroke.isFullFace,
+          onChanged: saving
+              ? null
+              : (v) => setState(
+                    () => _stroke = _stroke.copyWith(isFullFace: v),
+                  ),
+        ),
+        Wrap(
+          spacing: 6.0,
+          children: HitSide.values.map((side) {
+            return ChoiceChip(
+              key: Key('stroke_side_${side.storageKey}'),
+              label: Text(side.displayName),
+              selected: _stroke.hitSide == side,
+              onSelected: saving
+                  ? null
+                  : (_) => setState(
+                        () => _stroke = _stroke.copyWith(hitSide: side),
+                      ),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 10.0),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                key: const Key('stroke_tip_x_input'),
+                controller: _tipXCtrl,
+                enabled: !saving,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                  signed: true,
+                ),
+                decoration: InputDecoration(
+                  labelText: 'Mũi cơ X (mm, + phải / - trái)',
+                  errorText: _tipXError,
+                  isDense: true,
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8.0),
+            Expanded(
+              child: TextField(
+                key: const Key('stroke_tip_z_input'),
+                controller: _tipZCtrl,
+                enabled: !saving,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                  signed: true,
+                ),
+                decoration: InputDecoration(
+                  labelText: 'Mũi cơ Z (mm, + trên / - dưới)',
+                  errorText: _tipZError,
+                  isDense: true,
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6.0),
+        Builder(
+          builder: (context) {
+            final parsedX = _tryParseFiniteDouble(_tipXCtrl.text);
+            final parsedZ = _tryParseFiniteDouble(_tipZCtrl.text);
+            final xLabel = parsedX == null
+                ? 'Chờ số hợp lệ'
+                : CueTipConvention.describeAxisOffset(
+                    parsedX,
+                    positiveLabel: 'Phải',
+                    negativeLabel: 'Trái',
+                  );
+            final zLabel = parsedZ == null
+                ? 'Chờ số hợp lệ'
+                : CueTipConvention.describeAxisOffset(
+                    parsedZ,
+                    positiveLabel: 'Trên',
+                    negativeLabel: 'Dưới',
+                  );
+            return Text(
+              'Quy ước 4 mức biên tập: Ngang $xLabel • Dọc $zLabel',
+              style: Theme.of(context).textTheme.bodySmall,
+            );
+          },
+        ),
+        const SizedBox(height: 8.0),
+        Wrap(
+          spacing: 6.0,
+          children: CueTipConvention.standardTipDiametersMm.map((d) {
+            return ChoiceChip(
+              label: Text('Đầu cơ $d mm'),
+              selected: (_stroke.tipDiameterMm - d).abs() < 0.01,
+              onSelected: saving
+                  ? null
+                  : (_) => setState(
+                        () => _stroke = _stroke.copyWith(tipDiameterMm: d),
+                      ),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 8.0),
+        TextField(
+          key: const Key('stroke_force_input'),
+          controller: _forceCtrl,
+          enabled: !saving,
+          decoration: const InputDecoration(
+            labelText: 'Lực đánh (văn bản, ví dụ: vừa đủ về)',
+            isDense: true,
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 8.0),
+        TextField(
+          key: const Key('stroke_style_input'),
+          controller: _styleCtrl,
+          enabled: !saving,
+          decoration: const InputDecoration(
+            labelText: 'Kiểu ra cơ (văn bản)',
+            isDense: true,
+            border: OutlineInputBorder(),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDiagramsSection(bool saving) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Divider(height: 32.0),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Sơ đồ gắn với bài (${_diagrams.length})',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            FilledButton.tonalIcon(
+              key: const Key('add_diagram_button'),
+              onPressed: saving ? null : _addDiagram,
+              icon: const Icon(Icons.add_box_outlined),
+              label: const Text('Thêm sơ đồ'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8.0),
+        for (var i = 0; i < _diagrams.length; i++)
+          Card(
+            key: Key('editor_diagram_card_$i'),
+            margin: const EdgeInsets.only(bottom: 12.0),
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        'Sơ đồ ${i + 1}',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        key: Key('diagram_up_$i'),
+                        tooltip: 'Đưa lên',
+                        icon: const Icon(Icons.arrow_upward),
+                        onPressed: (saving || i == 0)
+                            ? null
+                            : () => _moveDiagram(i, -1),
+                      ),
+                      IconButton(
+                        key: Key('diagram_down_$i'),
+                        tooltip: 'Đưa xuống',
+                        icon: const Icon(Icons.arrow_downward),
+                        onPressed: (saving || i == _diagrams.length - 1)
+                            ? null
+                            : () => _moveDiagram(i, 1),
+                      ),
+                      IconButton(
+                        key: Key('delete_diagram_$i'),
+                        tooltip: 'Xóa sơ đồ',
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: saving ? null : () => _removeDiagram(i),
+                      ),
+                    ],
+                  ),
+                  Center(
+                    child: SizedBox(
+                      height: 220.0,
+                      child: BilliardTableReadOnlyView(
+                        scene: _diagrams[i].scene,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8.0),
+                  TextField(
+                    key: Key('diagram_caption_input_$i'),
+                    controller: _diagramCaptionControllers[i],
+                    enabled: !saving,
+                    decoration: const InputDecoration(
+                      labelText: 'Chú thích sơ đồ',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8.0),
+                  OutlinedButton.icon(
+                    key: Key('edit_diagram_$i'),
+                    onPressed: saving ? null : () => _editDiagram(i),
+                    icon: const Icon(Icons.edit_location_alt_outlined),
+                    label: const Text('Mở trình dựng sơ đồ'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildImagesHeader(bool busy) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Divider(height: 32.0),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Ảnh đính kèm (${_images.length})',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            FilledButton.tonalIcon(
+              key: const Key('add_image_button'),
+              onPressed: busy ? null : _pickImages,
+              icon: _isImportingImages
+                  ? const SizedBox(
+                      width: 16.0,
+                      height: 16.0,
+                      child: CircularProgressIndicator(strokeWidth: 2.0),
+                    )
+                  : const Icon(Icons.add_photo_alternate_outlined),
+              label: Text(
+                _isImportingImages ? 'Đang xử lý...' : 'Thêm ảnh',
+              ),
+            ),
+          ],
+        ),
+        if (_isImportingImages) ...[
+          const SizedBox(height: 8.0),
+          const LinearProgressIndicator(
+            key: Key('importing_images_banner'),
+          ),
+        ],
+        const SizedBox(height: 8.0),
+      ],
+    );
+  }
+
+  Widget _buildImageCard(int i, bool busy, bool saving) {
+    return Card(
+      key: Key('editor_image_card_$i'),
+      margin: const EdgeInsets.only(bottom: 12.0),
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Text(
+                  'Ảnh ${i + 1}',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const Spacer(),
+                IconButton(
+                  key: Key('image_up_$i'),
+                  tooltip: 'Đưa lên',
+                  icon: const Icon(Icons.arrow_upward),
+                  onPressed: (busy || i == 0) ? null : () => _moveImage(i, -1),
+                ),
+                IconButton(
+                  key: Key('image_down_$i'),
+                  tooltip: 'Đưa xuống',
+                  icon: const Icon(Icons.arrow_downward),
+                  onPressed: (busy || i == _images.length - 1)
+                      ? null
+                      : () => _moveImage(i, 1),
+                ),
+                IconButton(
+                  key: Key('delete_image_$i'),
+                  tooltip: 'Xóa ảnh',
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: busy ? null : () => _removeImage(i),
+                ),
+              ],
+            ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _EditorImageThumbnail(
+                  key: ValueKey('editor_thumb_${_images[i].assetId}'),
+                  image: _images[i],
+                  assetStore: widget.controller.assetStore,
+                  cache: _thumbnailCache,
+                ),
+                const SizedBox(width: 12.0),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _images[i].originalName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 4.0),
+                      Text(
+                        '${_images[i].width ?? '?'}×${_images[i].height ?? '?'} · '
+                        '${(_images[i].sizeBytes / 1024).toStringAsFixed(1)} KB',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8.0),
+            TextField(
+              key: Key('image_caption_input_$i'),
+              controller: _imageCaptionControllers[i],
+              enabled: !saving,
+              decoration: const InputDecoration(
+                labelText: 'Chú thích ảnh',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSourceSection(bool saving) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Divider(height: 32.0),
+        Text(
+          'Nguồn tài liệu (tùy chọn)',
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+        ),
+        const SizedBox(height: 8.0),
+        TextField(
+          key: const Key('article_source_input'),
+          controller: _sourceCtrl,
+          enabled: !saving,
+          decoration: const InputDecoration(
+            labelText: 'Tên nguồn / Sách',
+            isDense: true,
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 8.0),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                key: const Key('article_author_input'),
+                controller: _authorCtrl,
+                enabled: !saving,
+                decoration: const InputDecoration(
+                  labelText: 'Tác giả',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8.0),
+            Expanded(
+              child: TextField(
+                key: const Key('article_source_page_input'),
+                controller: _sourcePageCtrl,
+                enabled: !saving,
+                decoration: const InputDecoration(
+                  labelText: 'Số trang',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8.0),
+        TextField(
+          key: const Key('article_source_url_input'),
+          controller: _sourceUrlCtrl,
+          enabled: !saving,
+          keyboardType: TextInputType.url,
+          decoration: InputDecoration(
+            labelText: 'Liên kết nguồn (http:// hoặc https://)',
+            errorText: _sourceUrlError,
+            isDense: true,
+            border: const OutlineInputBorder(),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Bộ đệm LRU cho ảnh thumbnail đính kèm trong editor.
+/// Giới hạn số lượng mục (mặc định 20), giải phóng khi bỏ ảnh hoặc đóng form.
+class EditorThumbnailCache {
+  final int maxEntries;
+  final Map<String, Uint8List?> _entries = <String, Uint8List?>{};
+
+  EditorThumbnailCache({this.maxEntries = 20});
+
+  int get length => _entries.length;
+
+  bool containsKey(String key) => _entries.containsKey(key);
+
+  Uint8List? get(String key) {
+    if (!_entries.containsKey(key)) return null;
+    final value = _entries.remove(key);
+    _entries[key] = value;
+    return value;
+  }
+
+  void put(String key, Uint8List? bytes) {
+    if (_entries.containsKey(key)) {
+      _entries.remove(key);
+    } else if (_entries.length >= maxEntries) {
+      final oldestKey = _entries.keys.first;
+      _entries.remove(oldestKey);
+    }
+    _entries[key] = bytes;
+  }
+
+  void evict(String key) {
+    _entries.remove(key);
+  }
+
+  void evictByAssetId(String assetId) {
+    _entries.removeWhere((k, _) => k.startsWith('$assetId|') || k == assetId);
+  }
+
+  void clear() {
+    _entries.clear();
+  }
+}
+
+/// Widget tải thumbnail theo nhu cầu (chỉ tải khi widget được mount/hiển thị).
+/// Đọc tệp bất đồng bộ trên I/O worker, tạo thumbnail nhỏ (160px) vào LRU cache
+/// và đóng handle ngay lập tức để không giữ file lock trên Windows.
+class _EditorImageThumbnail extends StatefulWidget {
+  final ArticleImageAttachment image;
+  final ArticleAssetStore assetStore;
+  final EditorThumbnailCache cache;
+
+  const _EditorImageThumbnail({
+    super.key,
+    required this.image,
+    required this.assetStore,
+    required this.cache,
+  });
+
+  @override
+  State<_EditorImageThumbnail> createState() => _EditorImageThumbnailState();
+}
+
+class _EditorImageThumbnailState extends State<_EditorImageThumbnail> {
+  Uint8List? _bytes;
+  bool _isLoading = true;
+  bool _hasError = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final key = '${widget.image.assetId}|${widget.image.relativePath}';
+    final cached = widget.cache.get(key);
+    if (cached != null) {
+      _bytes = cached;
+      _isLoading = false;
+    } else {
+      _loadThumbnail();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _EditorImageThumbnail oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.image.assetId != widget.image.assetId ||
+        oldWidget.image.relativePath != widget.image.relativePath) {
+      _loadThumbnail();
+    }
+  }
+
+  Future<void> _loadThumbnail() async {
+    final key = '${widget.image.assetId}|${widget.image.relativePath}';
+    final cached = widget.cache.get(key);
+    if (cached != null) {
+      if (mounted) {
+        setState(() {
+          _bytes = cached;
+          _isLoading = false;
+          _hasError = false;
+        });
+      }
+      return;
+    }
+
+    try {
+      final file = await widget.assetStore.findExistingFile(
+        assetId: widget.image.assetId,
+        relativePath: widget.image.relativePath,
+      );
+      if (file == null || !await file.exists()) {
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+            _hasError = true;
+          });
+        }
+        return;
+      }
+
+      // Đọc bất đồng bộ trên I/O worker (không dùng readAsBytesSync trên UI isolate)
+      final rawBytes = await file.readAsBytes();
+      final thumbBytes = await _createThumbnailBytes(rawBytes, targetWidth: 160);
+
+      widget.cache.put(key, thumbBytes);
+
+      if (mounted) {
+        setState(() {
+          _bytes = thumbBytes;
+          _isLoading = false;
+          _hasError = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _hasError = true;
+        });
+      }
+    }
+  }
+
+  static Future<Uint8List> _createThumbnailBytes(
+    Uint8List rawBytes, {
+    int targetWidth = 160,
+  }) async {
+    // Nếu ảnh đã nhỏ (<= 100KB hoặc dummy test bytes), không cần downsample
+    if (rawBytes.length <= 100 * 1024) {
+      return rawBytes;
+    }
+    try {
+      final codec = await ui.instantiateImageCodec(
+        rawBytes,
+        targetWidth: targetWidth,
+      );
+      final frame = await codec.getNextFrame();
+      final byteData = await frame.image.toByteData(
+        format: ui.ImageByteFormat.png,
+      );
+      if (byteData != null) {
+        return byteData.buffer.asUint8List();
+      }
+    } catch (_) {
+      // Mock bytes hoặc codec không giải mã được
+    }
+    return rawBytes;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_bytes == null) {
+      return Container(
+        width: 88.0,
+        height: 88.0,
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        alignment: Alignment.center,
+        child: Icon(
+          _hasError
+              ? Icons.broken_image_outlined
+              : (_isLoading ? Icons.image_outlined : Icons.broken_image_outlined),
+          color: Theme.of(context).colorScheme.outline,
+        ),
+      );
+    }
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(6.0),
+      child: Image.memory(
+        _bytes!,
+        width: 88.0,
+        height: 88.0,
+        cacheWidth: 160,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => Container(
+          width: 88.0,
+          height: 88.0,
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          alignment: Alignment.center,
+          child: const Icon(Icons.broken_image_outlined),
+        ),
+      ),
     );
   }
 }

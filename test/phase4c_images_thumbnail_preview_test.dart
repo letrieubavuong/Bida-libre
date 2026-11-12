@@ -1858,5 +1858,123 @@ void main() {
         await _closeRepo(tester, repo);
       },
     );
+
+    testWidgets(
+      'Mở bài nhiều ảnh: không đọc bytes tất cả ảnh gốc khi mở form; cuộn mới tải; bỏ ảnh & đóng form giải phóng cache',
+      (tester) async {
+        final tempDir = Directory.systemTemp.createTempSync('bida_p4c_lazy_');
+        addTearDown(() {
+          try {
+            if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+          } catch (_) {}
+        });
+
+        final assetStore = ArticleAssetStore(
+          directoryProvider: () async => tempDir,
+        );
+        final repo = SqliteNotebookRepository(
+          dbPath: p.join(tempDir.path, 'notebook.db'),
+          assetStore: assetStore,
+        );
+        final controller = NotebookController(repository: repo);
+        await tester.runAsync(() => controller.initialize());
+
+        final staged = <ArticleImageAttachment>[];
+        for (var i = 0; i < 6; i++) {
+          final res = await tester.runAsync(
+            () => assetStore.stageImageBytes(
+              assetId: 'lazy_asset_$i',
+              bytes: _validPng1x1(),
+              originalName: 'lazy_photo_$i.png',
+            ),
+          );
+          staged.add(
+            ArticleImageAttachment(
+              id: 'lazy_img_$i',
+              assetId: res!.assetId,
+              relativePath: res.relativePath,
+              originalName: 'lazy_photo_$i.png',
+              mimeType: 'image/png',
+              sizeBytes: res.sizeBytes,
+              width: 1,
+              height: 1,
+              sortOrder: i,
+            ),
+          );
+        }
+
+        final saveRes = await tester.runAsync(
+          () => controller.saveArticle(
+            _makeArticle(
+              title: 'Bài nhiều ảnh lười tải',
+              summary: 'Tóm tắt bài nhiều ảnh',
+              images: staged,
+            ),
+          ),
+        );
+        expect(saveRes!.isSuccess, isTrue);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ArticleEditorScreen(
+              controller: controller,
+              existingArticle: saveRes.article,
+            ),
+          ),
+        );
+        await tester.pump();
+
+        // 1. Khi mở form: ở đầu trang (Title, Summary), các ảnh ở phía dưới chưa cần hiển thị
+        // Xác nhận chưa tải toàn bộ bytes của 6 ảnh gốc vào cache
+        final editorState = tester.state<ArticleEditorScreenState>(
+          find.byType(ArticleEditorScreen),
+        );
+        expect(editorState.thumbnailCacheForTesting.length, 0);
+
+        // 2. Cuộn tới ảnh đầu tiên -> chỉ tải thumbnail theo nhu cầu
+        await _scrollTo(tester, find.byKey(const Key('editor_image_card_0')));
+        await _waitUntil(
+          tester,
+          () => editorState.thumbnailCacheForTesting.length > 0,
+        );
+
+        expect(find.byKey(const Key('editor_image_card_0')), findsOneWidget);
+        expect(editorState.thumbnailCacheForTesting.length, greaterThanOrEqualTo(1));
+        expect(
+          editorState.thumbnailCacheForTesting.length,
+          lessThan(6),
+          reason: 'Không được đọc toàn bộ 6 ảnh gốc khi mới chỉ cuộn tới ảnh đầu',
+        );
+
+        // 3. Cuộn tiếp xuống ảnh 1 -> tải thêm thumbnail theo nhu cầu
+        await _scrollTo(tester, find.byKey(const Key('editor_image_card_1')));
+        await _waitUntil(
+          tester,
+          () => editorState.thumbnailCacheForTesting.length > 1,
+        );
+        expect(find.byKey(const Key('editor_image_card_1')), findsOneWidget);
+
+        // 4. Bỏ ảnh 1 ngay trên màn hình -> giải phóng cache của ảnh đó, không giữ vô hạn
+        final img1 = saveRes.article!.images[1];
+        final cacheKey1 = '${img1.assetId}|${img1.relativePath}';
+        expect(editorState.thumbnailCacheForTesting.containsKey(cacheKey1), isTrue);
+
+        await _scrollToAndTap(tester, find.byKey(const Key('delete_image_1')));
+        await tester.pumpAndSettle();
+
+        expect(
+          editorState.thumbnailCacheForTesting.containsKey(cacheKey1),
+          isFalse,
+          reason: 'Sau khi xóa ảnh, thumbnail cache của ảnh đó phải được giải phóng ngay',
+        );
+
+        // 5. Đóng form -> giải phóng toàn bộ cache
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        expect(editorState.thumbnailCacheForTesting.length, 0);
+
+        await _closeRepo(tester, repo);
+      },
+    );
   });
 }
