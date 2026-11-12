@@ -1,26 +1,36 @@
+import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../models/models.dart';
+import '../../repositories/article_asset_store.dart';
 import '../../state/notebook_controller.dart';
 import '../widgets/billiard_table_canvas.dart';
+import 'article_detail_screen.dart';
 import 'table_stage_screen.dart';
 
-/// Màn hình soạn / chỉnh sửa bài viết (Phase 4A):
-/// - Form đơn giản cho Kĩ thuật / Bộ số / Hình bi + Thông số cách đánh tĩnh + Sơ đồ theo thứ tự.
+/// Màn hình soạn / chỉnh sửa bài viết (Phase 4A–4C):
+/// - Form đơn giản cho Kĩ thuật / Bộ số / Hình bi + Thông số cách đánh tĩnh + Sơ đồ + Ảnh đính kèm.
 /// - Tích hợp trình dựng sơ đồ trả kết quả về bản nháp (không đụng `primary_scene.json`).
 /// - Cảnh báo khi thoát có thay đổi chưa lưu (Lưu / Bỏ thay đổi / Ở lại).
 class ArticleEditorScreen extends StatefulWidget {
   final NotebookController controller;
   final Article? existingArticle;
   final ArticleKind initialKind;
+  final Future<List<({String name, String? path, Uint8List? bytes})>> Function()?
+      imagePickerOverride;
+  final Future<bool> Function(Uri uri)? onLaunchUrl;
 
   const ArticleEditorScreen({
     super.key,
     required this.controller,
     this.existingArticle,
     this.initialKind = ArticleKind.technique,
+    this.imagePickerOverride,
+    this.onLaunchUrl,
   });
 
   @override
@@ -40,8 +50,11 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
   late List<String> _tags;
   late StrokeParameters _stroke;
   late List<ArticleDiagram> _diagrams;
+  late List<ArticleImageAttachment> _images;
   late List<TextEditingController> _stepControllers;
   late List<TextEditingController> _diagramCaptionControllers;
+  late List<TextEditingController> _imageCaptionControllers;
+  final List<String> _newlyStagedAssetIds = [];
 
   late final TextEditingController _titleCtrl;
   late final TextEditingController _summaryCtrl;
@@ -51,6 +64,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
   late final TextEditingController _sourceCtrl;
   late final TextEditingController _authorCtrl;
   late final TextEditingController _sourcePageCtrl;
+  late final TextEditingController _sourceUrlCtrl;
   late final TextEditingController _exactThickCtrl;
   late final TextEditingController _tipXCtrl;
   late final TextEditingController _tipZCtrl;
@@ -75,6 +89,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
         _sourceCtrl,
         _authorCtrl,
         _sourcePageCtrl,
+        _sourceUrlCtrl,
         _exactThickCtrl,
         _tipXCtrl,
         _tipZCtrl,
@@ -107,6 +122,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
     _tags = List<String>.from(existing?.tags ?? const []);
     _stroke = existing?.strokeParameters ?? const StrokeParameters.defaults();
     _diagrams = List<ArticleDiagram>.from(existing?.diagrams ?? const []);
+    _images = List<ArticleImageAttachment>.from(existing?.images ?? const []);
 
     _titleCtrl = TextEditingController(text: existing?.title ?? '');
     _summaryCtrl = TextEditingController(text: existing?.summary ?? '');
@@ -117,6 +133,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
     _sourceCtrl = TextEditingController(text: existing?.source ?? '');
     _authorCtrl = TextEditingController(text: existing?.author ?? '');
     _sourcePageCtrl = TextEditingController(text: existing?.sourcePage ?? '');
+    _sourceUrlCtrl = TextEditingController(text: existing?.sourceUrl ?? '');
 
     _exactThickCtrl = TextEditingController(
       text: _stroke.exactThicknessValue?.toString() ?? '',
@@ -134,6 +151,9 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
     _diagramCaptionControllers = _diagrams
         .map((d) => TextEditingController(text: d.caption))
         .toList();
+    _imageCaptionControllers = _images
+        .map((img) => TextEditingController(text: img.caption))
+        .toList();
 
     for (final c in _fixedTextControllers) {
       c.addListener(_onFormFieldChanged);
@@ -142,6 +162,9 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
       c.addListener(_onFormFieldChanged);
     }
     for (final c in _diagramCaptionControllers) {
+      c.addListener(_onFormFieldChanged);
+    }
+    for (final c in _imageCaptionControllers) {
       c.addListener(_onFormFieldChanged);
     }
 
@@ -162,6 +185,10 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
       c.dispose();
     }
     for (final c in _diagramCaptionControllers) {
+      c.removeListener(_onFormFieldChanged);
+      c.dispose();
+    }
+    for (final c in _imageCaptionControllers) {
       c.removeListener(_onFormFieldChanged);
       c.dispose();
     }
@@ -233,6 +260,19 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
     return _exactThicknessError ?? _tipXError ?? _tipZError;
   }
 
+  String? get _sourceUrlError {
+    final raw = _sourceUrlCtrl.text.trim();
+    if (raw.isEmpty) return null;
+    if (!Article.isValidOptionalHttpUrl(raw)) {
+      return 'Liên kết nguồn phải bắt đầu bằng http:// hoặc https:// và hợp lệ.';
+    }
+    return null;
+  }
+
+  String? _firstFormValidationError() {
+    return _firstNumericValidationError() ?? _sourceUrlError;
+  }
+
   Article _buildCurrentDraft({bool? overrideIsDraft}) {
     final created = widget.existingArticle?.createdAt ?? _draftSentinelTimestamp;
     final updated = widget.existingArticle?.updatedAt ?? _draftSentinelTimestamp;
@@ -271,6 +311,16 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
       );
     }
 
+    final updatedImages = <ArticleImageAttachment>[];
+    for (var i = 0; i < _images.length; i++) {
+      updatedImages.add(
+        _images[i].copyWith(
+          sortOrder: i,
+          caption: _imageCaptionControllers[i].text.trim(),
+        ),
+      );
+    }
+
     String? optText(TextEditingController c) {
       final t = c.text.trim();
       return t.isEmpty ? null : t;
@@ -292,9 +342,11 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
       source: optText(_sourceCtrl),
       author: optText(_authorCtrl),
       sourcePage: optText(_sourcePageCtrl),
+      sourceUrl: optText(_sourceUrlCtrl),
       isDraft: overrideIsDraft ?? _isDraft,
       strokeParameters: stroke,
       diagrams: updatedDiagrams,
+      images: updatedImages,
       createdAt: created,
       updatedAt: updated,
       isFavorite: widget.existingArticle?.isFavorite ?? false,
@@ -371,13 +423,18 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
     FocusManager.instance.primaryFocus?.unfocus();
 
     final numericError = _firstNumericValidationError();
-    if (numericError != null) {
+    final formError = numericError ?? _sourceUrlError;
+    if (formError != null) {
       setState(() {});
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text('Dữ liệu số chưa hợp lệ'),
-          content: Text(numericError),
+          title: Text(
+            numericError != null
+                ? 'Dữ liệu số chưa hợp lệ'
+                : 'Liên kết nguồn chưa hợp lệ',
+          ),
+          content: Text(formError),
           actions: [
             FilledButton(
               onPressed: () => Navigator.of(ctx).pop(),
@@ -410,6 +467,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
       return false;
     }
 
+    _newlyStagedAssetIds.clear();
     _savedPopped = true;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Đã lưu bài ${outcome.article!.code}')),
@@ -451,10 +509,172 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
 
     if (!mounted) return;
     if (choice == 'discard') {
+      await widget.controller.assetStore
+          .discardStagingAssets(_newlyStagedAssetIds);
+      _newlyStagedAssetIds.clear();
+      if (!mounted) return;
       _savedPopped = true;
       Navigator.of(context).pop();
     } else if (choice == 'save') {
       await _saveArticle();
+    }
+  }
+
+  Future<void> _openPreview() async {
+    if (widget.controller.isSaving) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    final numericError = _firstNumericValidationError();
+    final formError = _firstFormValidationError();
+    if (formError != null) {
+      setState(() {});
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(
+            numericError != null
+                ? 'Dữ liệu số chưa hợp lệ'
+                : 'Liên kết nguồn chưa hợp lệ',
+          ),
+          content: Text(formError),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Đóng'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    final draft = _buildCurrentDraft();
+    var groupName = _primaryGroupId;
+    for (final g in widget.controller.groupsForKind(_kind)) {
+      if (g.id == _primaryGroupId) {
+        groupName = g.name;
+        break;
+      }
+    }
+    final collections = widget.existingArticle != null
+        ? widget.controller.getCollectionsForArticle(widget.existingArticle!.id)
+        : const <Collection>[];
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => ArticlePreviewScreen(
+          draftArticle: draft,
+          groupName: groupName,
+          collections: collections,
+          assetStore: widget.controller.assetStore,
+          onLaunchUrl: widget.onLaunchUrl,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickImages() async {
+    if (widget.controller.isSaving) return;
+    final List<({String name, String? path, Uint8List? bytes})> picked;
+    if (widget.imagePickerOverride != null) {
+      picked = await widget.imagePickerOverride!();
+    } else {
+      final picker = ImagePicker();
+      final files = await picker.pickMultiImage();
+      picked = [
+        for (final f in files) (name: f.name, path: f.path, bytes: null),
+      ];
+    }
+    if (picked.isEmpty || !mounted) return;
+
+    final errors = <String>[];
+    for (final item in picked) {
+      try {
+        final assetId = _freshUuid();
+        final StagedImageAsset staged;
+        if (item.bytes != null) {
+          staged = await widget.controller.assetStore.stageImageBytes(
+            assetId: assetId,
+            bytes: item.bytes!,
+            originalName: item.name,
+          );
+        } else if (item.path != null && item.path!.isNotEmpty) {
+          staged = await widget.controller.assetStore.stageImageFile(
+            assetId: assetId,
+            sourceFilePath: item.path!,
+            originalName: item.name,
+          );
+        } else {
+          errors.add('${item.name}: Không đọc được đường dẫn hoặc dữ liệu ảnh.');
+          continue;
+        }
+        if (!mounted) return;
+        final captionCtrl = TextEditingController()
+          ..addListener(_onFormFieldChanged);
+        setState(() {
+          _newlyStagedAssetIds.add(staged.assetId);
+          _images.add(
+            ArticleImageAttachment(
+              id: _freshUuid(),
+              articleId: _workingArticleId,
+              assetId: staged.assetId,
+              relativePath: staged.relativePath,
+              originalName: staged.originalName,
+              mimeType: staged.mimeType,
+              sizeBytes: staged.sizeBytes,
+              width: staged.width,
+              height: staged.height,
+              caption: '',
+              sortOrder: _images.length,
+            ),
+          );
+          _imageCaptionControllers.add(captionCtrl);
+        });
+      } catch (e) {
+        errors.add('${item.name}: $e');
+      }
+    }
+
+    if (errors.isNotEmpty && mounted) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Không thể thêm một số ảnh'),
+          content: Text(errors.join('\n')),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Đóng'),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
+  void _moveImage(int index, int delta) {
+    final target = index + delta;
+    if (target < 0 || target >= _images.length) return;
+    setState(() {
+      final img = _images.removeAt(index);
+      _images.insert(target, img);
+      final cap = _imageCaptionControllers.removeAt(index);
+      _imageCaptionControllers.insert(target, cap);
+    });
+  }
+
+  Future<void> _removeImage(int index) async {
+    late final ArticleImageAttachment removed;
+    setState(() {
+      removed = _images.removeAt(index);
+      final cap = _imageCaptionControllers.removeAt(index);
+      cap.removeListener(_onFormFieldChanged);
+      cap.dispose();
+    });
+    final stillUsed = _images.any((i) => i.assetId == removed.assetId);
+    if (!stillUsed && _newlyStagedAssetIds.contains(removed.assetId)) {
+      _newlyStagedAssetIds.remove(removed.assetId);
+      await widget.controller.assetStore
+          .discardStagingAssets([removed.assetId]);
     }
   }
 
@@ -556,6 +776,12 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                     : 'Sửa ${widget.existingArticle!.code}',
               ),
               actions: [
+                IconButton(
+                  key: const Key('preview_article_button'),
+                  tooltip: 'Xem trước',
+                  icon: const Icon(Icons.visibility_outlined),
+                  onPressed: saving ? null : _openPreview,
+                ),
                 TextButton(
                   key: const Key('save_draft_button'),
                   onPressed: saving ? null : () => _saveArticle(forceDraft: true),
@@ -1178,6 +1404,155 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                   ),
 
                 const Divider(height: 32.0),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Ảnh đính kèm (${_images.length})',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                    ),
+                    FilledButton.tonalIcon(
+                      key: const Key('add_image_button'),
+                      onPressed: saving ? null : _pickImages,
+                      icon: const Icon(Icons.add_photo_alternate_outlined),
+                      label: const Text('Thêm ảnh'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8.0),
+                for (var i = 0; i < _images.length; i++)
+                  Card(
+                    key: Key('editor_image_card_$i'),
+                    margin: const EdgeInsets.only(bottom: 12.0),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Row(
+                            children: [
+                              Text(
+                                'Ảnh ${i + 1}',
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              const Spacer(),
+                              IconButton(
+                                key: Key('image_up_$i'),
+                                tooltip: 'Đưa lên',
+                                icon: const Icon(Icons.arrow_upward),
+                                onPressed: (saving || i == 0)
+                                    ? null
+                                    : () => _moveImage(i, -1),
+                              ),
+                              IconButton(
+                                key: Key('image_down_$i'),
+                                tooltip: 'Đưa xuống',
+                                icon: const Icon(Icons.arrow_downward),
+                                onPressed:
+                                    (saving || i == _images.length - 1)
+                                        ? null
+                                        : () => _moveImage(i, 1),
+                              ),
+                              IconButton(
+                                key: Key('delete_image_$i'),
+                                tooltip: 'Xóa ảnh',
+                                icon: const Icon(Icons.delete_outline),
+                                onPressed:
+                                    saving ? null : () => _removeImage(i),
+                              ),
+                            ],
+                          ),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              FutureBuilder<File?>(
+                                future: widget.controller.assetStore
+                                    .findExistingFile(
+                                  assetId: _images[i].assetId,
+                                  relativePath: _images[i].relativePath,
+                                ),
+                                builder: (context, snapshot) {
+                                  final file = snapshot.data;
+                                  if (file == null) {
+                                    return Container(
+                                      width: 88.0,
+                                      height: 88.0,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .surfaceContainerHighest,
+                                      alignment: Alignment.center,
+                                      child: const Icon(
+                                        Icons.broken_image_outlined,
+                                      ),
+                                    );
+                                  }
+                                  return ClipRRect(
+                                    borderRadius: BorderRadius.circular(6.0),
+                                    child: Image.file(
+                                      file,
+                                      width: 88.0,
+                                      height: 88.0,
+                                      cacheWidth: 160,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, _, _) => Container(
+                                        width: 88.0,
+                                        height: 88.0,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .surfaceContainerHighest,
+                                        alignment: Alignment.center,
+                                        child: const Icon(
+                                          Icons.broken_image_outlined,
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                              const SizedBox(width: 12.0),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      _images[i].originalName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4.0),
+                                    Text(
+                                      '${_images[i].width ?? '?'}×${_images[i].height ?? '?'} · '
+                                      '${(_images[i].sizeBytes / 1024).toStringAsFixed(1)} KB',
+                                      style:
+                                          Theme.of(context).textTheme.bodySmall,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8.0),
+                          TextField(
+                            key: Key('image_caption_input_$i'),
+                            controller: _imageCaptionControllers[i],
+                            enabled: !saving,
+                            decoration: const InputDecoration(
+                              labelText: 'Chú thích ảnh',
+                              isDense: true,
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                const Divider(height: 32.0),
                 Text(
                   'Nguồn tài liệu (tùy chọn)',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -1224,6 +1599,19 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                       ),
                     ),
                   ],
+                ),
+                const SizedBox(height: 8.0),
+                TextField(
+                  key: const Key('article_source_url_input'),
+                  controller: _sourceUrlCtrl,
+                  enabled: !saving,
+                  keyboardType: TextInputType.url,
+                  decoration: InputDecoration(
+                    labelText: 'Liên kết nguồn (http:// hoặc https://)',
+                    errorText: _sourceUrlError,
+                    isDense: true,
+                    border: const OutlineInputBorder(),
+                  ),
                 ),
                 const SizedBox(height: 24.0),
               ],

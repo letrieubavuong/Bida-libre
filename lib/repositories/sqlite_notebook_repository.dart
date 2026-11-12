@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:path/path.dart' as p;
@@ -8,6 +9,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../geometry/scene_validator.dart';
 import '../models/models.dart';
+import 'article_asset_store.dart';
 import 'notebook_repository.dart';
 
 typedef SqliteTransactionHook = Future<void> Function(
@@ -19,13 +21,14 @@ typedef SqliteTransactionHook = Future<void> Function(
 /// - Mọi thao tác lưu/sửa/nhân bản/xóa bài + sơ đồ chạy trong transaction nguyên tử.
 /// - Không đụng tới tệp `primary_scene.json` của bàn dựng độc lập từ Phase 2–3.
 class SqliteNotebookRepository implements NotebookRepository {
-  static const int schemaVersion = 2;
+  static const int schemaVersion = 3;
   static const String defaultDbFileName = 'libre_billiard.db';
 
   final String? dbPath;
   final DatabaseFactory? databaseFactoryOverride;
   final Future<String> Function()? directoryPathProvider;
   final SqliteTransactionHook? debugTransactionHook;
+  late final ArticleAssetStore _assetStore;
 
   Database? _db;
   Future<void>? _initFuture;
@@ -46,7 +49,25 @@ class SqliteNotebookRepository implements NotebookRepository {
     this.databaseFactoryOverride,
     this.directoryPathProvider,
     this.debugTransactionHook,
-  });
+    ArticleAssetStore? assetStore,
+  }) {
+    if (assetStore != null) {
+      _assetStore = assetStore;
+    } else if (directoryPathProvider != null) {
+      _assetStore = ArticleAssetStore(
+        directoryProvider: () async => Directory(await directoryPathProvider!()),
+      );
+    } else if (dbPath != null && dbPath != inMemoryDatabasePath) {
+      _assetStore = ArticleAssetStore(
+        directoryProvider: () async => Directory(p.dirname(dbPath!)),
+      );
+    } else {
+      _assetStore = ArticleAssetStore();
+    }
+  }
+
+  @override
+  ArticleAssetStore get assetStore => _assetStore;
 
   bool get isInitialized => _db != null;
 
@@ -80,6 +101,15 @@ class SqliteNotebookRepository implements NotebookRepository {
 
     await _ensureInitialSeedOnce(db);
     await _reloadCacheFromDb(db);
+    if (!isInMemory) {
+      final activeAssets = <String>{
+        for (final art in _articles)
+          for (final img in art.images) img.assetId,
+      };
+      await _assetStore.cleanupOrphanedAssets(
+        referencedAssetIds: activeAssets,
+      );
+    }
   }
 
   Future<String> _resolveDbPath() async {
@@ -134,6 +164,7 @@ class SqliteNotebookRepository implements NotebookRepository {
         source TEXT,
         author TEXT,
         source_page TEXT,
+        source_url TEXT,
         is_draft INTEGER NOT NULL,
         stroke_params_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
@@ -158,6 +189,34 @@ class SqliteNotebookRepository implements NotebookRepository {
       'ON article_diagrams(article_id, sort_order)',
     );
     await _createPhase4BTables(db);
+    await _createPhase4CTables(db);
+  }
+
+  Future<void> _createPhase4CTables(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS article_images (
+        id TEXT PRIMARY KEY,
+        article_id TEXT NOT NULL,
+        asset_id TEXT NOT NULL,
+        relative_path TEXT NOT NULL,
+        original_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        width INTEGER,
+        height INTEGER,
+        caption TEXT NOT NULL,
+        sort_order INTEGER NOT NULL,
+        FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_article_images_order '
+      'ON article_images(article_id, sort_order)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_article_images_asset '
+      'ON article_images(asset_id)',
+    );
   }
 
   Future<void> _createPhase4BTables(DatabaseExecutor db) async {
@@ -240,6 +299,14 @@ class SqliteNotebookRepository implements NotebookRepository {
           );
         }
       }
+    }
+    if (oldVersion < 3) {
+      final cols = await db.rawQuery('PRAGMA table_info(articles)');
+      final hasSourceUrl = cols.any((c) => c['name'] == 'source_url');
+      if (!hasSourceUrl) {
+        await db.execute('ALTER TABLE articles ADD COLUMN source_url TEXT');
+      }
+      await _createPhase4CTables(db);
     }
   }
 
@@ -345,6 +412,29 @@ class SqliteNotebookRepository implements NotebookRepository {
       diagramsByArticle.putIfAbsent(articleId, () => []).add(diagram);
     }
 
+    final imageRows = await db.query(
+      'article_images',
+      orderBy: 'sort_order ASC',
+    );
+    final imagesByArticle = <String, List<ArticleImageAttachment>>{};
+    for (final row in imageRows) {
+      final articleId = row['article_id'] as String;
+      final img = ArticleImageAttachment(
+        id: row['id'] as String,
+        articleId: articleId,
+        assetId: row['asset_id'] as String,
+        relativePath: row['relative_path'] as String,
+        originalName: (row['original_name'] as String?) ?? 'image',
+        mimeType: (row['mime_type'] as String?) ?? 'image/jpeg',
+        sizeBytes: (row['size_bytes'] as num).toInt(),
+        width: (row['width'] as num?)?.toInt(),
+        height: (row['height'] as num?)?.toInt(),
+        caption: (row['caption'] as String?) ?? '',
+        sortOrder: (row['sort_order'] as num).toInt(),
+      );
+      imagesByArticle.putIfAbsent(articleId, () => []).add(img);
+    }
+
     final loadedArticles = articleRows.map((row) {
       final id = row['id'] as String;
       final strokeMap =
@@ -369,9 +459,11 @@ class SqliteNotebookRepository implements NotebookRepository {
         source: row['source'] as String?,
         author: row['author'] as String?,
         sourcePage: row['source_page'] as String?,
+        sourceUrl: row['source_url'] as String?,
         isDraft: (row['is_draft'] as num).toInt() != 0,
         strokeParameters: StrokeParameters.fromJson(strokeMap),
         diagrams: diagramsByArticle[id] ?? const [],
+        images: imagesByArticle[id] ?? const [],
         createdAt: DateTime.parse(row['created_at'] as String),
         updatedAt: DateTime.parse(row['updated_at'] as String),
         isFavorite: (row['is_favorite'] as num).toInt() != 0,
@@ -587,7 +679,36 @@ class SqliteNotebookRepository implements NotebookRepository {
 
       final normalizedTags = _dedupeTags(draft.tags);
 
+      // Xác định ảnh mới cần promote từ staging sang vùng bền vững trước transaction SQLite.
+      final existingArticleId = draft.id.trim();
+      final prevImages = existingArticleId.isEmpty
+          ? const <ArticleImageAttachment>[]
+          : (getArticleById(existingArticleId)?.images ??
+              const <ArticleImageAttachment>[]);
+      final prevAssetPaths = <String, String>{
+        for (final img in prevImages) img.assetId: img.relativePath,
+      };
+
+      for (final img in draft.images) {
+        final alreadyPersisted = prevAssetPaths.containsKey(img.assetId);
+        if (!alreadyPersisted) {
+          await _assetStore.promoteStagedAsset(
+            assetId: img.assetId,
+            relativePath: img.relativePath,
+          );
+          final committedFile =
+              await _assetStore.resolveRelativePath(img.relativePath);
+          if (!await committedFile.exists()) {
+            throw FileSystemException(
+              'Không thể xác minh tệp ảnh đã lưu.',
+              committedFile.path,
+            );
+          }
+        }
+      }
+
       late Article persisted;
+      final candidateDeleteAssets = <String, String>{};
       await db.transaction((txn) async {
         // Kiểm tra nhóm chính phải tồn tại và thuộc đúng loại bài viết.
         final groupRows = await txn.query(
@@ -652,11 +773,26 @@ class SqliteNotebookRepository implements NotebookRepository {
           );
         }
 
+        final normalizedImages = <ArticleImageAttachment>[];
+        for (var i = 0; i < draft.images.length; i++) {
+          final img = draft.images[i];
+          final imgId =
+              img.id.trim().isEmpty ? generateUuidV4() : img.id.trim();
+          normalizedImages.add(
+            img.copyWith(
+              id: imgId,
+              articleId: articleId,
+              sortOrder: i,
+            ),
+          );
+        }
+
         persisted = draft.copyWith(
           id: articleId,
           code: resolvedCode,
           tags: normalizedTags,
           diagrams: normalizedDiagrams,
+          images: normalizedImages,
           createdAt: resolvedCreatedAt,
           updatedAt: now,
         );
@@ -676,6 +812,7 @@ class SqliteNotebookRepository implements NotebookRepository {
           'source': persisted.source,
           'author': persisted.author,
           'source_page': persisted.sourcePage,
+          'source_url': persisted.sourceUrl,
           'is_draft': persisted.isDraft ? 1 : 0,
           'stroke_params_json': jsonEncode(persisted.strokeParameters.toJson()),
           'created_at': persisted.createdAt.toIso8601String(),
@@ -717,12 +854,63 @@ class SqliteNotebookRepository implements NotebookRepository {
           });
         }
 
+        await txn.delete(
+          'article_images',
+          where: 'article_id = ?',
+          whereArgs: [persisted.id],
+        );
+
+        for (final img in normalizedImages) {
+          await txn.insert('article_images', {
+            'id': img.id,
+            'article_id': img.articleId,
+            'asset_id': img.assetId,
+            'relative_path': img.relativePath,
+            'original_name': img.originalName,
+            'mime_type': img.mimeType,
+            'size_bytes': img.sizeBytes,
+            'width': img.width,
+            'height': img.height,
+            'caption': img.caption,
+            'sort_order': img.sortOrder,
+          });
+        }
+
+        final keptAssetIds = normalizedImages.map((e) => e.assetId).toSet();
+        for (final entry in prevAssetPaths.entries) {
+          if (!keptAssetIds.contains(entry.key)) {
+            candidateDeleteAssets[entry.key] = entry.value;
+          }
+        }
+
         await debugTransactionHook?.call(txn, 'before_commit');
       });
+
+      // Chỉ xóa tệp vật lý sau khi SQLite commit và không còn bài nào khác tham chiếu assetId.
+      for (final entry in candidateDeleteAssets.entries) {
+        await _deleteAssetIfUnreferenced(db, entry.key, entry.value);
+      }
 
       await _reloadCacheFromDb(db);
       return getArticleById(persisted.id) ?? persisted;
     });
+  }
+
+  Future<void> _deleteAssetIfUnreferenced(
+    Database db,
+    String assetId,
+    String relativePath,
+  ) async {
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) AS cnt FROM article_images WHERE asset_id = ?',
+      [assetId],
+    );
+    final count = (rows.first['cnt'] as num?)?.toInt() ?? 0;
+    if (count == 0) {
+      try {
+        await _assetStore.deleteCommittedAsset(relativePath);
+      } catch (_) {}
+    }
   }
 
   @override
@@ -758,11 +946,24 @@ class SqliteNotebookRepository implements NotebookRepository {
           );
         }
 
+        final clonedImages = <ArticleImageAttachment>[];
+        for (var i = 0; i < source.images.length; i++) {
+          final srcImg = source.images[i];
+          clonedImages.add(
+            srcImg.copyWith(
+              id: generateUuidV4(),
+              articleId: newArticleId,
+              sortOrder: i,
+            ),
+          );
+        }
+
         cloned = source.copyWith(
           id: newArticleId,
           code: newCode,
           title: '${source.title} (Bản sao)',
           diagrams: clonedDiagrams,
+          images: clonedImages,
           createdAt: now,
           updatedAt: now,
         );
@@ -783,6 +984,7 @@ class SqliteNotebookRepository implements NotebookRepository {
           'source': cloned.source,
           'author': cloned.author,
           'source_page': cloned.sourcePage,
+          'source_url': cloned.sourceUrl,
           'is_draft': cloned.isDraft ? 1 : 0,
           'stroke_params_json': jsonEncode(cloned.strokeParameters.toJson()),
           'created_at': cloned.createdAt.toIso8601String(),
@@ -803,6 +1005,21 @@ class SqliteNotebookRepository implements NotebookRepository {
             'scene_json': jsonEncode(diag.scene.toJson()),
           });
         }
+        for (final img in clonedImages) {
+          await txn.insert('article_images', {
+            'id': img.id,
+            'article_id': img.articleId,
+            'asset_id': img.assetId,
+            'relative_path': img.relativePath,
+            'original_name': img.originalName,
+            'mime_type': img.mimeType,
+            'size_bytes': img.sizeBytes,
+            'width': img.width,
+            'height': img.height,
+            'caption': img.caption,
+            'sort_order': img.sortOrder,
+          });
+        }
       });
 
       await _reloadCacheFromDb(db);
@@ -815,9 +1032,25 @@ class SqliteNotebookRepository implements NotebookRepository {
     return _serializedWrite(() async {
       await initialize();
       final db = _db!;
+      final candidateAssets = <String, String>{};
       await db.transaction((txn) async {
+        final imgRows = await txn.query(
+          'article_images',
+          columns: ['asset_id', 'relative_path'],
+          where: 'article_id = ?',
+          whereArgs: [articleId],
+        );
+        for (final row in imgRows) {
+          candidateAssets[row['asset_id'] as String] =
+              row['relative_path'] as String;
+        }
         await txn.delete(
           'collection_items',
+          where: 'article_id = ?',
+          whereArgs: [articleId],
+        );
+        await txn.delete(
+          'article_images',
           where: 'article_id = ?',
           whereArgs: [articleId],
         );
@@ -832,6 +1065,9 @@ class SqliteNotebookRepository implements NotebookRepository {
           whereArgs: [articleId],
         );
       });
+      for (final entry in candidateAssets.entries) {
+        await _deleteAssetIfUnreferenced(db, entry.key, entry.value);
+      }
       await _reloadCacheFromDb(db);
     });
   }

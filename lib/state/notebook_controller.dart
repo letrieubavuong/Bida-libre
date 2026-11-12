@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../models/models.dart';
+import '../repositories/article_asset_store.dart';
 import '../repositories/notebook_repository.dart';
 import '../repositories/sqlite_notebook_repository.dart';
 
@@ -74,6 +75,7 @@ class NotebookController extends ChangeNotifier {
   }
 
   NotebookRepository get repository => _repository;
+  ArticleAssetStore get assetStore => _repository.assetStore;
   ArticleKind get currentTab => _currentTab;
   bool get isLoading => _isLoading;
   bool get isSaving => _isSaving;

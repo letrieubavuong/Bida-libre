@@ -1,8 +1,11 @@
 import '../models/models.dart';
+import 'article_asset_store.dart';
 
-/// Giao diện kho lưu trữ thống nhất cho LibreBilliard (Phase 4A–4B).
+/// Giao diện kho lưu trữ thống nhất cho LibreBilliard (Phase 4A–4C).
 /// Bản chính sử dụng SQLite qua [SqliteNotebookRepository].
 abstract class NotebookRepository {
+  ArticleAssetStore get assetStore;
+
   Future<void> initialize();
 
   List<EditorialGroup> getGroups(ArticleKind kind);

@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../models/models.dart';
 import '../../state/notebook_controller.dart';
-import '../widgets/billiard_table_canvas.dart';
+import '../widgets/article_detail_body.dart';
 import 'article_editor_screen.dart';
 
 /// Màn hình xem chi tiết bài viết (chỉ đọc):
@@ -11,11 +11,13 @@ import 'article_editor_screen.dart';
 class ArticleDetailScreen extends StatefulWidget {
   final NotebookController controller;
   final String articleId;
+  final Future<bool> Function(Uri uri)? onLaunchUrl;
 
   const ArticleDetailScreen({
     super.key,
     required this.controller,
     required this.articleId,
+    this.onLaunchUrl,
   });
 
   @override
@@ -112,13 +114,6 @@ class _ArticleDetailScreenState extends State<ArticleDetailScreen> {
           );
         }
 
-        final stroke = article.strokeParameters;
-        final cueLabel = switch (stroke.cueBallId) {
-          'ball_yellow' => 'Bi vàng',
-          'ball_red' => 'Bi đỏ',
-          _ => 'Bi trắng',
-        };
-
         return Scaffold(
           appBar: AppBar(
             title: Text(article.code),
@@ -157,214 +152,12 @@ class _ArticleDetailScreenState extends State<ArticleDetailScreen> {
               ),
             ],
           ),
-          body: ListView(
-            padding: const EdgeInsets.all(16.0),
-            children: [
-              Wrap(
-                spacing: 8.0,
-                runSpacing: 6.0,
-                children: [
-                  Chip(label: Text(article.kind.label)),
-                  Chip(label: Text(_groupName(article))),
-                  Chip(label: Text(article.difficulty.label)),
-                  if (article.isDraft)
-                    const Chip(
-                      avatar: Icon(Icons.edit_note, size: 16.0),
-                      label: Text('Bản nháp'),
-                    ),
-                ],
-              ),
-              if (article.tags.isNotEmpty) ...[
-                const SizedBox(height: 8.0),
-                Wrap(
-                  spacing: 6.0,
-                  runSpacing: 4.0,
-                  children: article.tags
-                      .map(
-                        (t) => Chip(
-                          label: Text('#$t'),
-                          visualDensity: VisualDensity.compact,
-                        ),
-                      )
-                      .toList(),
-                ),
-              ],
-              Builder(
-                builder: (context) {
-                  final cols = _controller.getCollectionsForArticle(article.id);
-                  if (cols.isEmpty) return const SizedBox.shrink();
-                  return Padding(
-                    padding: const EdgeInsets.only(top: 8.0),
-                    child: Wrap(
-                      spacing: 6.0,
-                      runSpacing: 4.0,
-                      children: cols
-                          .map(
-                            (c) => Chip(
-                              avatar: const Icon(
-                                Icons.collections_bookmark_outlined,
-                                size: 16.0,
-                              ),
-                              label: Text(c.name),
-                              visualDensity: VisualDensity.compact,
-                            ),
-                          )
-                          .toList(),
-                    ),
-                  );
-                },
-              ),
-              const SizedBox(height: 12.0),
-              Text(
-                article.title,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-              ),
-              if (article.summary.isNotEmpty) ...[
-                const SizedBox(height: 8.0),
-                Text(
-                  article.summary,
-                  style: Theme.of(context).textTheme.bodyLarge,
-                ),
-              ],
-              const SizedBox(height: 16.0),
-
-              if (article.goal.isNotEmpty)
-                _SectionCard(
-                  title: 'Mục tiêu & Tình huống',
-                  child: Text(article.goal),
-                ),
-
-              if (article.content.isNotEmpty)
-                _SectionCard(
-                  title: 'Nội dung giải thích',
-                  child: Text(article.content),
-                ),
-
-              if (article.steps.isNotEmpty)
-                _SectionCard(
-                  title: 'Các bước thực hiện',
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      for (var i = 0; i < article.steps.length; i++)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 6.0),
-                          child: Text('${i + 1}. ${article.steps[i]}'),
-                        ),
-                    ],
-                  ),
-                ),
-
-              if (article.commonMistakes.isNotEmpty)
-                _SectionCard(
-                  title: 'Lưu ý & Lỗi thường gặp',
-                  child: Text(article.commonMistakes),
-                ),
-
-              _SectionCard(
-                title: 'Thông số cách đánh (Tĩnh)',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Bi chủ: $cueLabel'),
-                    const SizedBox(height: 4.0),
-                    Text('Độ dày chạm: ${stroke.thicknessSummary}'),
-                    const SizedBox(height: 4.0),
-                    Text(
-                      'Mũi cơ ngang (X): ${stroke.horizontalTipLabel}',
-                    ),
-                    const SizedBox(height: 4.0),
-                    Text(
-                      'Mũi cơ dọc (Z): ${stroke.verticalTipLabel}',
-                    ),
-                    const SizedBox(height: 4.0),
-                    Text(
-                      'Đầu cơ tham chiếu: ${stroke.tipDiameterMm} mm '
-                      '(quy ước 4 mức biên tập: 1 mức = ${CueTipConvention.fourLevelStepMm} mm)',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    if (stroke.tipNote.isNotEmpty) ...[
-                      const SizedBox(height: 4.0),
-                      Text('Ghi chú mũi cơ: ${stroke.tipNote}'),
-                    ],
-                    if (stroke.forceText.isNotEmpty) ...[
-                      const SizedBox(height: 4.0),
-                      Text('Lực đánh: ${stroke.forceText}'),
-                    ],
-                    if (stroke.strokeStyleText.isNotEmpty) ...[
-                      const SizedBox(height: 4.0),
-                      Text('Kiểu ra cơ: ${stroke.strokeStyleText}'),
-                    ],
-                  ],
-                ),
-              ),
-
-              if ((article.source ?? '').isNotEmpty ||
-                  (article.author ?? '').isNotEmpty ||
-                  (article.sourcePage ?? '').isNotEmpty)
-                _SectionCard(
-                  title: 'Nguồn tham khảo',
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if ((article.source ?? '').isNotEmpty)
-                        Text('Nguồn: ${article.source}'),
-                      if ((article.author ?? '').isNotEmpty)
-                        Text('Tác giả: ${article.author}'),
-                      if ((article.sourcePage ?? '').isNotEmpty)
-                        Text('Trang: ${article.sourcePage}'),
-                    ],
-                  ),
-                ),
-
-              const SizedBox(height: 8.0),
-              Text(
-                'Sơ đồ minh họa (${article.diagrams.length})',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-              ),
-              const SizedBox(height: 8.0),
-              if (article.diagrams.isEmpty)
-                const Card(
-                  child: Padding(
-                    padding: EdgeInsets.all(16.0),
-                    child: Text('Bài viết chưa gắn sơ đồ nào.'),
-                  ),
-                )
-              else
-                for (var i = 0; i < article.diagrams.length; i++)
-                  Card(
-                    key: Key('detail_diagram_card_$i'),
-                    margin: const EdgeInsets.only(bottom: 12.0),
-                    child: Padding(
-                      padding: const EdgeInsets.all(12.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            article.diagrams[i].caption.isNotEmpty
-                                ? 'Sơ đồ ${i + 1}: ${article.diagrams[i].caption}'
-                                : 'Sơ đồ ${i + 1}',
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(height: 8.0),
-                          Center(
-                            child: SizedBox(
-                              height: 320.0,
-                              child: BilliardTableReadOnlyView(
-                                key: Key('readonly_diagram_$i'),
-                                scene: article.diagrams[i].scene,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-            ],
+          body: ArticleDetailBody(
+            article: article,
+            groupName: _groupName(article),
+            collections: _controller.getCollectionsForArticle(article.id),
+            assetStore: _controller.assetStore,
+            onLaunchUrl: widget.onLaunchUrl,
           ),
         );
       },
@@ -372,31 +165,40 @@ class _ArticleDetailScreenState extends State<ArticleDetailScreen> {
   }
 }
 
-class _SectionCard extends StatelessWidget {
-  final String title;
-  final Widget child;
+/// Màn hình xem trước bài viết trước khi lưu (Phase 4C).
+/// Không ghi SQLite, không cấp mã chính thức và không commit tệp staging.
+class ArticlePreviewScreen extends StatelessWidget {
+  final Article draftArticle;
+  final String groupName;
+  final List<Collection> collections;
+  final dynamic assetStore;
+  final Future<bool> Function(Uri uri)? onLaunchUrl;
 
-  const _SectionCard({required this.title, required this.child});
+  const ArticlePreviewScreen({
+    super.key,
+    required this.draftArticle,
+    required this.groupName,
+    this.collections = const [],
+    required this.assetStore,
+    this.onLaunchUrl,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12.0),
-      child: Padding(
-        padding: const EdgeInsets.all(14.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-            ),
-            const SizedBox(height: 8.0),
-            child,
-          ],
-        ),
+    final title = draftArticle.code.trim().isEmpty
+        ? 'Xem trước bản nháp'
+        : 'Xem trước · ${draftArticle.code}';
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(title),
+      ),
+      body: ArticleDetailBody(
+        article: draftArticle,
+        groupName: groupName,
+        collections: collections,
+        assetStore: assetStore,
+        isPreview: true,
+        onLaunchUrl: onLaunchUrl,
       ),
     );
   }

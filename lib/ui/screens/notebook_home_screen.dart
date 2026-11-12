@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../models/models.dart';
 import '../../repositories/scene_storage.dart';
 import '../../state/notebook_controller.dart';
+import '../widgets/article_thumbnail.dart';
 import 'article_detail_screen.dart';
 import 'article_editor_screen.dart';
 import 'collections_screen.dart';
@@ -494,8 +495,9 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
                         margin: const EdgeInsets.only(bottom: 12.0),
                         child: ListTile(
                           onTap: () => _openArticleDetail(article),
-                          leading: CircleAvatar(
-                            child: Text(article.kind.codePrefix),
+                          leading: ArticleThumbnail(
+                            article: article,
+                            assetStore: _controller.assetStore,
                           ),
                           title: Text(
                             article.title,
