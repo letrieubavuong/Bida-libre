@@ -66,12 +66,12 @@ void main() {
       await tester.runAsync(() => setup.repo.close());
     });
 
-    testWidgets('Không hiển thị thanh tìm kiếm; hỗ trợ lọc Yêu thích và xóa lọc ở trạng thái rỗng',
+    testWidgets('Hiển thị thanh tìm kiếm Phase 4B; hỗ trợ lọc Yêu thích và xóa lọc ở trạng thái rỗng',
         (WidgetTester tester) async {
       final setup = await createTestController(tester);
       await tester.pumpWidget(LibreBilliardApp(controller: setup.controller));
 
-      expect(find.byType(TextField), findsNothing);
+      expect(find.byKey(const Key('home_search_input')), findsOneWidget);
       expect(find.text('Chưa có bài nào trong mục Kĩ thuật'), findsOneWidget);
 
       await tester.tap(find.byTooltip('Yêu thích'));

@@ -16,6 +16,36 @@ class EditorialGroup {
     this.sortOrder = 0,
   });
 
+  EditorialGroup copyWith({
+    String? id,
+    ArticleKind? kind,
+    String? name,
+    String? description,
+    int? sortOrder,
+  }) {
+    return EditorialGroup(
+      id: id ?? this.id,
+      kind: kind ?? this.kind,
+      name: name ?? this.name,
+      description: description ?? this.description,
+      sortOrder: sortOrder ?? this.sortOrder,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is EditorialGroup &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          kind == other.kind &&
+          name == other.name &&
+          description == other.description &&
+          sortOrder == other.sortOrder;
+
+  @override
+  int get hashCode => Object.hash(id, kind, name, description, sortOrder);
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'kind': kind.storageKey,
@@ -75,6 +105,37 @@ class Collection {
     required this.name,
     this.orderedArticleIds = const [],
   });
+
+  Collection copyWith({
+    String? id,
+    String? name,
+    List<String>? orderedArticleIds,
+  }) {
+    return Collection(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      orderedArticleIds: orderedArticleIds ?? this.orderedArticleIds,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other is! Collection ||
+        id != other.id ||
+        name != other.name ||
+        orderedArticleIds.length != other.orderedArticleIds.length) {
+      return false;
+    }
+    for (var i = 0; i < orderedArticleIds.length; i++) {
+      if (orderedArticleIds[i] != other.orderedArticleIds[i]) return false;
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(id, name, Object.hashAll(orderedArticleIds));
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -288,6 +349,44 @@ class DefaultEditorialGroups {
       sortOrder: 8,
     ),
   ];
+
+  static const String techniqueUnclassifiedId = 'tech_unclassified';
+  static const String systemUnclassifiedId = 'sys_unclassified';
+  static const String positionUnclassifiedId = 'unclassified';
+
+  static String unclassifiedIdFor(ArticleKind kind) {
+    switch (kind) {
+      case ArticleKind.technique:
+        return techniqueUnclassifiedId;
+      case ArticleKind.system:
+        return systemUnclassifiedId;
+      case ArticleKind.position:
+        return positionUnclassifiedId;
+    }
+  }
+
+  static bool isUnclassifiedGroupId(String groupId) {
+    return groupId == techniqueUnclassifiedId ||
+        groupId == systemUnclassifiedId ||
+        groupId == positionUnclassifiedId;
+  }
+
+  static EditorialGroup unclassifiedGroupFor(ArticleKind kind) {
+    switch (kind) {
+      case ArticleKind.technique:
+        return const EditorialGroup(
+          id: techniqueUnclassifiedId,
+          kind: ArticleKind.technique,
+          name: 'Chưa phân loại',
+          description: 'Nơi tiếp nhận bài kĩ thuật chưa phân loại',
+          sortOrder: 99,
+        );
+      case ArticleKind.system:
+        return systemGroups.first;
+      case ArticleKind.position:
+        return positionGroups.last;
+    }
+  }
 
   static List<EditorialGroup> forKind(ArticleKind kind) {
     switch (kind) {

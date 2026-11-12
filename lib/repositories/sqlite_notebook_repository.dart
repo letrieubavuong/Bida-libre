@@ -19,7 +19,7 @@ typedef SqliteTransactionHook = Future<void> Function(
 /// - Mọi thao tác lưu/sửa/nhân bản/xóa bài + sơ đồ chạy trong transaction nguyên tử.
 /// - Không đụng tới tệp `primary_scene.json` của bàn dựng độc lập từ Phase 2–3.
 class SqliteNotebookRepository implements NotebookRepository {
-  static const int schemaVersion = 1;
+  static const int schemaVersion = 2;
   static const String defaultDbFileName = 'libre_billiard.db';
 
   final String? dbPath;
@@ -70,6 +70,9 @@ class SqliteNotebookRepository implements NotebookRepository {
         },
         onCreate: (db, version) async {
           await _createSchema(db);
+        },
+        onUpgrade: (db, oldVersion, newVersion) async {
+          await _migrateSchema(db, oldVersion, newVersion);
         },
       ),
     );
@@ -154,6 +157,90 @@ class SqliteNotebookRepository implements NotebookRepository {
       'CREATE INDEX IF NOT EXISTS idx_article_diagrams_order '
       'ON article_diagrams(article_id, sort_order)',
     );
+    await _createPhase4BTables(db);
+  }
+
+  Future<void> _createPhase4BTables(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS tags (
+        id TEXT PRIMARY KEY,
+        normalized_key TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        aliases_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS collections (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS collection_items (
+        collection_id TEXT NOT NULL,
+        article_id TEXT NOT NULL,
+        sort_order INTEGER NOT NULL,
+        PRIMARY KEY (collection_id, article_id),
+        FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+        FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_collection_items_order '
+      'ON collection_items(collection_id, sort_order)',
+    );
+  }
+
+  Future<void> _migrateSchema(
+    Database db,
+    int oldVersion,
+    int newVersion,
+  ) async {
+    if (oldVersion < 2) {
+      await _createPhase4BTables(db);
+
+      // Bảo đảm nhóm Chưa phân loại tồn tại cho mọi loại bài mà không ghi đè dữ liệu cũ.
+      for (final kind in ArticleKind.values) {
+        final unc = DefaultEditorialGroups.unclassifiedGroupFor(kind);
+        await db.insert(
+          'editorial_groups',
+          {
+            'id': unc.id,
+            'kind': unc.kind.storageKey,
+            'name': unc.name,
+            'description': unc.description,
+            'sort_order': unc.sortOrder,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+
+      // Đồng bộ toàn bộ thẻ đã có trong bài viết Phase 4A vào bảng tags.
+      final articleRows = await db.query('articles', columns: ['tags_json']);
+      final nowIso = DateTime.now().toUtc().toIso8601String();
+      for (final row in articleRows) {
+        final decoded = jsonDecode(row['tags_json'] as String) as List<dynamic>;
+        for (final raw in decoded) {
+          final clean = VietnameseSearchNormalizer.cleanTagDisplay(raw.toString());
+          if (clean.isEmpty) continue;
+          final key = VietnameseSearchNormalizer.tagDuplicateKey(clean);
+          await db.insert(
+            'tags',
+            {
+              'id': generateUuidV4(),
+              'normalized_key': key,
+              'name': clean,
+              'aliases_json': '[]',
+              'created_at': nowIso,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
+      }
+    }
   }
 
   /// Khởi tạo nhóm mặc định đúng một lần khi CSDL mới tinh; không ghi đè dữ liệu ở các lần mở sau.
@@ -167,6 +254,7 @@ class SqliteNotebookRepository implements NotebookRepository {
       if (metaRows.isEmpty) {
         final defaults = [
           ...DefaultEditorialGroups.techniqueGroups,
+          DefaultEditorialGroups.unclassifiedGroupFor(ArticleKind.technique),
           ...DefaultEditorialGroups.systemGroups,
           ...DefaultEditorialGroups.positionGroups,
         ];
@@ -186,7 +274,23 @@ class SqliteNotebookRepository implements NotebookRepository {
         await txn.insert(
           'meta',
           {'key': 'default_groups_seeded', 'value': '1'},
-          conflictAlgorithm: ConflictAlgorithm.replace,
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+
+      // Bảo đảm mỗi loại đều có nhóm Chưa phân loại (chỉ thêm nếu thiếu, không ghi đè).
+      for (final kind in ArticleKind.values) {
+        final unc = DefaultEditorialGroups.unclassifiedGroupFor(kind);
+        await txn.insert(
+          'editorial_groups',
+          {
+            'id': unc.id,
+            'kind': unc.kind.storageKey,
+            'name': unc.name,
+            'description': unc.description,
+            'sort_order': unc.sortOrder,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
         );
       }
 
@@ -280,12 +384,57 @@ class SqliteNotebookRepository implements NotebookRepository {
       );
     }).toList();
 
+    final tagRows = await db.query(
+      'tags',
+      orderBy: 'name COLLATE NOCASE ASC',
+    );
+    final loadedTags = tagRows.map((row) {
+      final aliasesRaw = (row['aliases_json'] as String?) ?? '[]';
+      final aliases = (jsonDecode(aliasesRaw) as List<dynamic>)
+          .map((e) => e.toString())
+          .toList();
+      return Tag(
+        id: row['id'] as String,
+        name: row['name'] as String,
+        aliases: aliases,
+      );
+    }).toList();
+
+    final collectionRows = await db.query(
+      'collections',
+      orderBy: 'updated_at DESC, name COLLATE NOCASE ASC',
+    );
+    final itemRows = await db.query(
+      'collection_items',
+      orderBy: 'sort_order ASC',
+    );
+    final articleIdsByCollection = <String, List<String>>{};
+    for (final row in itemRows) {
+      final cid = row['collection_id'] as String;
+      final aid = row['article_id'] as String;
+      articleIdsByCollection.putIfAbsent(cid, () => []).add(aid);
+    }
+    final loadedCollections = collectionRows.map((row) {
+      final cid = row['id'] as String;
+      return Collection(
+        id: cid,
+        name: row['name'] as String,
+        orderedArticleIds: articleIdsByCollection[cid] ?? const [],
+      );
+    }).toList();
+
     _groups
       ..clear()
       ..addAll(loadedGroups);
     _articles
       ..clear()
       ..addAll(loadedArticles);
+    _tags
+      ..clear()
+      ..addAll(loadedTags);
+    _collections
+      ..clear()
+      ..addAll(loadedCollections);
   }
 
   Future<T> _serializedWrite<T>(Future<T> Function() action) {
@@ -381,6 +530,42 @@ class SqliteNotebookRepository implements NotebookRepository {
     return null;
   }
 
+  List<String> _dedupeTags(List<String> rawTags) {
+    final seen = <String>{};
+    final result = <String>[];
+    for (final raw in rawTags) {
+      final clean = VietnameseSearchNormalizer.cleanTagDisplay(raw);
+      if (clean.isEmpty) continue;
+      final key = VietnameseSearchNormalizer.tagDuplicateKey(clean);
+      if (seen.add(key)) {
+        result.add(clean);
+      }
+    }
+    return result;
+  }
+
+  Future<void> _upsertTagsInTxn(
+    Transaction txn,
+    List<String> cleanTags,
+    DateTime now,
+  ) async {
+    final nowIso = now.toIso8601String();
+    for (final tagName in cleanTags) {
+      final key = VietnameseSearchNormalizer.tagDuplicateKey(tagName);
+      await txn.insert(
+        'tags',
+        {
+          'id': generateUuidV4(),
+          'normalized_key': key,
+          'name': tagName,
+          'aliases_json': '[]',
+          'created_at': nowIso,
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+  }
+
   @override
   Future<Article> saveArticle(Article draft) {
     return _serializedWrite(() async {
@@ -400,8 +585,27 @@ class SqliteNotebookRepository implements NotebookRepository {
         }
       }
 
+      final normalizedTags = _dedupeTags(draft.tags);
+
       late Article persisted;
       await db.transaction((txn) async {
+        // Kiểm tra nhóm chính phải tồn tại và thuộc đúng loại bài viết.
+        final groupRows = await txn.query(
+          'editorial_groups',
+          columns: ['id', 'kind'],
+          where: 'id = ?',
+          whereArgs: [draft.primaryGroupId],
+        );
+        if (groupRows.isEmpty) {
+          throw const FormatException('Nhóm chính không tồn tại.');
+        }
+        final groupKind = ArticleKind.fromKey(groupRows.first['kind'] as String);
+        if (groupKind != draft.kind) {
+          throw const FormatException(
+            'Nhóm chính phải thuộc đúng loại bài viết.',
+          );
+        }
+
         final now = DateTime.now().toUtc();
         final articleId =
             draft.id.trim().isEmpty ? generateUuidV4() : draft.id.trim();
@@ -451,40 +655,49 @@ class SqliteNotebookRepository implements NotebookRepository {
         persisted = draft.copyWith(
           id: articleId,
           code: resolvedCode,
+          tags: normalizedTags,
           diagrams: normalizedDiagrams,
           createdAt: resolvedCreatedAt,
           updatedAt: now,
         );
 
-        await txn.insert(
-          'articles',
-          {
-            'id': persisted.id,
-            'code': persisted.code,
-            'kind': persisted.kind.storageKey,
-            'title': persisted.title.trim(),
-            'summary': persisted.summary,
-            'primary_group_id': persisted.primaryGroupId,
-            'tags_json': jsonEncode(persisted.tags),
-            'difficulty': persisted.difficulty.storageKey,
-            'goal': persisted.goal,
-            'content': persisted.content,
-            'steps_json': jsonEncode(persisted.steps),
-            'common_mistakes': persisted.commonMistakes,
-            'source': persisted.source,
-            'author': persisted.author,
-            'source_page': persisted.sourcePage,
-            'is_draft': persisted.isDraft ? 1 : 0,
-            'stroke_params_json':
-                jsonEncode(persisted.strokeParameters.toJson()),
-            'created_at': persisted.createdAt.toIso8601String(),
-            'updated_at': persisted.updatedAt.toIso8601String(),
-            'is_favorite': persisted.isFavorite ? 1 : 0,
-            'practice_status': persisted.practiceStatus.storageKey,
-            'related_article_ids_json': jsonEncode(persisted.relatedArticleIds),
-          },
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
+        final values = <String, Object?>{
+          'code': persisted.code,
+          'kind': persisted.kind.storageKey,
+          'title': persisted.title.trim(),
+          'summary': persisted.summary,
+          'primary_group_id': persisted.primaryGroupId,
+          'tags_json': jsonEncode(persisted.tags),
+          'difficulty': persisted.difficulty.storageKey,
+          'goal': persisted.goal,
+          'content': persisted.content,
+          'steps_json': jsonEncode(persisted.steps),
+          'common_mistakes': persisted.commonMistakes,
+          'source': persisted.source,
+          'author': persisted.author,
+          'source_page': persisted.sourcePage,
+          'is_draft': persisted.isDraft ? 1 : 0,
+          'stroke_params_json': jsonEncode(persisted.strokeParameters.toJson()),
+          'created_at': persisted.createdAt.toIso8601String(),
+          'updated_at': persisted.updatedAt.toIso8601String(),
+          'is_favorite': persisted.isFavorite ? 1 : 0,
+          'practice_status': persisted.practiceStatus.storageKey,
+          'related_article_ids_json': jsonEncode(persisted.relatedArticleIds),
+        };
+
+        // Không dùng INSERT OR REPLACE để tránh kích hoạt ON DELETE CASCADE ngoài ý muốn.
+        if (existingRows.isEmpty) {
+          await txn.insert('articles', {'id': persisted.id, ...values});
+        } else {
+          await txn.update(
+            'articles',
+            values,
+            where: 'id = ?',
+            whereArgs: [persisted.id],
+          );
+        }
+
+        await _upsertTagsInTxn(txn, normalizedTags, now);
 
         await debugTransactionHook?.call(txn, 'after_article_insert');
 
@@ -604,6 +817,11 @@ class SqliteNotebookRepository implements NotebookRepository {
       final db = _db!;
       await db.transaction((txn) async {
         await txn.delete(
+          'collection_items',
+          where: 'article_id = ?',
+          whereArgs: [articleId],
+        );
+        await txn.delete(
           'article_diagrams',
           where: 'article_id = ?',
           whereArgs: [articleId],
@@ -639,10 +857,382 @@ class SqliteNotebookRepository implements NotebookRepository {
   }
 
   @override
+  EditorialGroup? getGroupById(String groupId) {
+    for (final g in _groups) {
+      if (g.id == groupId) return g;
+    }
+    return null;
+  }
+
+  @override
+  int countArticlesInGroup(String groupId) {
+    return _articles.where((a) => a.primaryGroupId == groupId).length;
+  }
+
+  @override
+  Future<EditorialGroup> saveGroup({
+    String? id,
+    required ArticleKind kind,
+    required String name,
+    String description = '',
+  }) {
+    return _serializedWrite(() async {
+      await initialize();
+      final db = _db!;
+      final cleanName = name.trim();
+      if (cleanName.isEmpty) {
+        throw const FormatException('Tên nhóm không được để trống.');
+      }
+
+      late String resolvedId;
+      await db.transaction((txn) async {
+        final existingId = id?.trim();
+        if (existingId != null && existingId.isNotEmpty) {
+          final rows = await txn.query(
+            'editorial_groups',
+            where: 'id = ?',
+            whereArgs: [existingId],
+          );
+          if (rows.isEmpty) {
+            throw StateError('Không tìm thấy nhóm để cập nhật.');
+          }
+          await txn.update(
+            'editorial_groups',
+            {'name': cleanName, 'description': description.trim()},
+            where: 'id = ?',
+            whereArgs: [existingId],
+          );
+          resolvedId = existingId;
+        } else {
+          final maxOrderRows = await txn.rawQuery(
+            'SELECT COALESCE(MAX(sort_order), 0) AS max_order '
+            'FROM editorial_groups WHERE kind = ?',
+            [kind.storageKey],
+          );
+          final maxOrder =
+              (maxOrderRows.first['max_order'] as num?)?.toInt() ?? 0;
+          resolvedId = generateUuidV4();
+          await txn.insert('editorial_groups', {
+            'id': resolvedId,
+            'kind': kind.storageKey,
+            'name': cleanName,
+            'description': description.trim(),
+            'sort_order': maxOrder + 1,
+          });
+        }
+      });
+
+      await _reloadCacheFromDb(db);
+      return getGroupById(resolvedId)!;
+    });
+  }
+
+  @override
+  Future<void> reorderGroups(ArticleKind kind, List<String> orderedGroupIds) {
+    return _serializedWrite(() async {
+      await initialize();
+      final db = _db!;
+      await db.transaction((txn) async {
+        for (var i = 0; i < orderedGroupIds.length; i++) {
+          await txn.update(
+            'editorial_groups',
+            {'sort_order': i + 1},
+            where: 'id = ? AND kind = ?',
+            whereArgs: [orderedGroupIds[i], kind.storageKey],
+          );
+        }
+      });
+      await _reloadCacheFromDb(db);
+    });
+  }
+
+  @override
+  Future<void> deleteGroup({
+    required String groupId,
+    required String targetGroupId,
+  }) {
+    return _serializedWrite(() async {
+      await initialize();
+      final db = _db!;
+      if (DefaultEditorialGroups.isUnclassifiedGroupId(groupId)) {
+        throw const FormatException('Không thể xóa nhóm Chưa phân loại.');
+      }
+      if (groupId == targetGroupId) {
+        throw const FormatException('Nhóm nhận bài phải khác nhóm đang xóa.');
+      }
+
+      await db.transaction((txn) async {
+        final srcRows = await txn.query(
+          'editorial_groups',
+          where: 'id = ?',
+          whereArgs: [groupId],
+        );
+        if (srcRows.isEmpty) {
+          throw StateError('Không tìm thấy nhóm cần xóa.');
+        }
+        final dstRows = await txn.query(
+          'editorial_groups',
+          where: 'id = ?',
+          whereArgs: [targetGroupId],
+        );
+        if (dstRows.isEmpty) {
+          throw const FormatException('Nhóm đích không tồn tại.');
+        }
+        final srcKind = srcRows.first['kind'] as String;
+        final dstKind = dstRows.first['kind'] as String;
+        if (srcKind != dstKind) {
+          throw const FormatException(
+            'Nhóm nhận bài phải thuộc cùng loại với nhóm bị xóa.',
+          );
+        }
+
+        await txn.update(
+          'articles',
+          {'primary_group_id': targetGroupId},
+          where: 'primary_group_id = ?',
+          whereArgs: [groupId],
+        );
+
+        await debugTransactionHook?.call(txn, 'before_delete_group');
+
+        await txn.delete(
+          'editorial_groups',
+          where: 'id = ?',
+          whereArgs: [groupId],
+        );
+      });
+
+      await _reloadCacheFromDb(db);
+    });
+  }
+
+  @override
   List<Collection> getCollections() => List.unmodifiable(_collections);
 
   @override
+  Collection? getCollectionById(String collectionId) {
+    for (final c in _collections) {
+      if (c.id == collectionId) return c;
+    }
+    return null;
+  }
+
+  @override
+  List<Collection> getCollectionsForArticle(String articleId) {
+    return _collections
+        .where((c) => c.orderedArticleIds.contains(articleId))
+        .toList(growable: false);
+  }
+
+  @override
+  Future<Collection> createCollection(String name) {
+    return _serializedWrite(() async {
+      await initialize();
+      final db = _db!;
+      final cleanName = name.trim();
+      if (cleanName.isEmpty) {
+        throw const FormatException('Tên bộ sưu tập không được để trống.');
+      }
+      final id = generateUuidV4();
+      final nowIso = DateTime.now().toUtc().toIso8601String();
+      await db.insert('collections', {
+        'id': id,
+        'name': cleanName,
+        'created_at': nowIso,
+        'updated_at': nowIso,
+      });
+      await _reloadCacheFromDb(db);
+      return getCollectionById(id)!;
+    });
+  }
+
+  @override
+  Future<Collection> renameCollection(String collectionId, String newName) {
+    return _serializedWrite(() async {
+      await initialize();
+      final db = _db!;
+      final cleanName = newName.trim();
+      if (cleanName.isEmpty) {
+        throw const FormatException('Tên bộ sưu tập không được để trống.');
+      }
+      final updatedCount = await db.update(
+        'collections',
+        {
+          'name': cleanName,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [collectionId],
+      );
+      if (updatedCount == 0) {
+        throw StateError('Không tìm thấy bộ sưu tập.');
+      }
+      await _reloadCacheFromDb(db);
+      return getCollectionById(collectionId)!;
+    });
+  }
+
+  @override
+  Future<void> deleteCollection(String collectionId) {
+    return _serializedWrite(() async {
+      await initialize();
+      final db = _db!;
+      await db.transaction((txn) async {
+        await txn.delete(
+          'collection_items',
+          where: 'collection_id = ?',
+          whereArgs: [collectionId],
+        );
+        await txn.delete(
+          'collections',
+          where: 'id = ?',
+          whereArgs: [collectionId],
+        );
+      });
+      await _reloadCacheFromDb(db);
+    });
+  }
+
+  @override
+  Future<void> addArticleToCollection({
+    required String collectionId,
+    required String articleId,
+  }) {
+    return _serializedWrite(() async {
+      await initialize();
+      final db = _db!;
+      await db.transaction((txn) async {
+        final colRows = await txn.query(
+          'collections',
+          columns: ['id'],
+          where: 'id = ?',
+          whereArgs: [collectionId],
+        );
+        if (colRows.isEmpty) {
+          throw StateError('Bộ sưu tập không tồn tại.');
+        }
+        final artRows = await txn.query(
+          'articles',
+          columns: ['id'],
+          where: 'id = ?',
+          whereArgs: [articleId],
+        );
+        if (artRows.isEmpty) {
+          throw StateError('Bài viết không tồn tại.');
+        }
+        final exists = await txn.query(
+          'collection_items',
+          columns: ['collection_id'],
+          where: 'collection_id = ? AND article_id = ?',
+          whereArgs: [collectionId, articleId],
+        );
+        if (exists.isNotEmpty) return;
+
+        final maxRows = await txn.rawQuery(
+          'SELECT COALESCE(MAX(sort_order), -1) AS max_order '
+          'FROM collection_items WHERE collection_id = ?',
+          [collectionId],
+        );
+        final nextOrder =
+            ((maxRows.first['max_order'] as num?)?.toInt() ?? -1) + 1;
+        await txn.insert('collection_items', {
+          'collection_id': collectionId,
+          'article_id': articleId,
+          'sort_order': nextOrder,
+        });
+        await txn.update(
+          'collections',
+          {'updated_at': DateTime.now().toUtc().toIso8601String()},
+          where: 'id = ?',
+          whereArgs: [collectionId],
+        );
+      });
+      await _reloadCacheFromDb(db);
+    });
+  }
+
+  @override
+  Future<void> removeArticleFromCollection({
+    required String collectionId,
+    required String articleId,
+  }) {
+    return _serializedWrite(() async {
+      await initialize();
+      final db = _db!;
+      await db.transaction((txn) async {
+        await txn.delete(
+          'collection_items',
+          where: 'collection_id = ? AND article_id = ?',
+          whereArgs: [collectionId, articleId],
+        );
+        final remaining = await txn.query(
+          'collection_items',
+          columns: ['article_id'],
+          where: 'collection_id = ?',
+          whereArgs: [collectionId],
+          orderBy: 'sort_order ASC',
+        );
+        for (var i = 0; i < remaining.length; i++) {
+          await txn.update(
+            'collection_items',
+            {'sort_order': i},
+            where: 'collection_id = ? AND article_id = ?',
+            whereArgs: [collectionId, remaining[i]['article_id']],
+          );
+        }
+        await txn.update(
+          'collections',
+          {'updated_at': DateTime.now().toUtc().toIso8601String()},
+          where: 'id = ?',
+          whereArgs: [collectionId],
+        );
+      });
+      await _reloadCacheFromDb(db);
+    });
+  }
+
+  @override
+  Future<void> reorderCollectionArticles({
+    required String collectionId,
+    required List<String> orderedArticleIds,
+  }) {
+    return _serializedWrite(() async {
+      await initialize();
+      final db = _db!;
+      await db.transaction((txn) async {
+        for (var i = 0; i < orderedArticleIds.length; i++) {
+          await txn.update(
+            'collection_items',
+            {'sort_order': i},
+            where: 'collection_id = ? AND article_id = ?',
+            whereArgs: [collectionId, orderedArticleIds[i]],
+          );
+        }
+        await txn.update(
+          'collections',
+          {'updated_at': DateTime.now().toUtc().toIso8601String()},
+          where: 'id = ?',
+          whereArgs: [collectionId],
+        );
+      });
+      await _reloadCacheFromDb(db);
+    });
+  }
+
+  @override
   List<Tag> getTags() => List.unmodifiable(_tags);
+
+  @override
+  List<String> suggestTags(String query) {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) {
+      return _tags.map((t) => t.name).toList(growable: false);
+    }
+    return _tags
+        .where((t) => VietnameseSearchNormalizer.matches(t.name, trimmed))
+        .map((t) => t.name)
+        .toList(growable: false);
+  }
 
   @override
   Future<void> close() async {

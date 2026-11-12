@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+
 import '../../models/models.dart';
 import '../../repositories/scene_storage.dart';
 import '../../state/notebook_controller.dart';
 import 'article_detail_screen.dart';
 import 'article_editor_screen.dart';
+import 'collections_screen.dart';
+import 'group_management_screen.dart';
 import 'table_stage_screen.dart';
 
 class NotebookHomeScreen extends StatefulWidget {
@@ -23,20 +26,69 @@ class NotebookHomeScreen extends StatefulWidget {
 class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
   NotebookController get _controller => widget.controller;
 
+  late final TextEditingController _searchCtrl;
+  late final ScrollController _scrollCtrl;
+  ArticleKind? _lastRenderedTab;
+  bool _restoringScroll = false;
+
   @override
   void initState() {
     super.initState();
+    _lastRenderedTab = _controller.currentTab;
+    _searchCtrl = TextEditingController(text: _controller.searchQuery);
+    _scrollCtrl = ScrollController(
+      initialScrollOffset: _controller.currentScrollOffset,
+    );
+    _scrollCtrl.addListener(_onScroll);
     _controller.addListener(_onControllerChanged);
   }
 
   @override
   void dispose() {
     _controller.removeListener(_onControllerChanged);
+    _scrollCtrl.removeListener(_onScroll);
+    _scrollCtrl.dispose();
+    _searchCtrl.dispose();
     super.dispose();
   }
 
+  void _onScroll() {
+    if (_restoringScroll || !_scrollCtrl.hasClients) return;
+    _controller.setScrollOffset(_controller.currentTab, _scrollCtrl.offset);
+  }
+
+  void _restoreScrollForCurrentTab() {
+    final target = _controller.currentScrollOffset;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollCtrl.hasClients) return;
+      final maxExtent = _scrollCtrl.position.maxScrollExtent;
+      final clamped = target.clamp(0.0, maxExtent);
+      if ((_scrollCtrl.offset - clamped).abs() > 0.5) {
+        _restoringScroll = true;
+        _scrollCtrl.jumpTo(clamped);
+        _restoringScroll = false;
+      }
+    });
+  }
+
   void _onControllerChanged() {
+    if (!mounted) return;
+    final tabChanged = _lastRenderedTab != _controller.currentTab;
+    _lastRenderedTab = _controller.currentTab;
+
+    if (_searchCtrl.text != _controller.searchQuery) {
+      _searchCtrl.value = TextEditingValue(
+        text: _controller.searchQuery,
+        selection: TextSelection.collapsed(
+          offset: _controller.searchQuery.length,
+        ),
+      );
+    }
+
     setState(() {});
+    if (tabChanged) {
+      _restoreScrollForCurrentTab();
+    }
   }
 
   int _tabIndex(ArticleKind kind) {
@@ -79,6 +131,7 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
         ),
       ),
     );
+    _restoreScrollForCurrentTab();
   }
 
   Future<void> _openArticleDetail(Article article) async {
@@ -88,6 +141,163 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
           controller: _controller,
           articleId: article.id,
         ),
+      ),
+    );
+    _restoreScrollForCurrentTab();
+  }
+
+  void _openGroupManager() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => GroupManagementScreen(
+          controller: _controller,
+          kind: _controller.currentTab,
+        ),
+      ),
+    );
+  }
+
+  void _openCollections() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => CollectionsScreen(controller: _controller),
+      ),
+    );
+  }
+
+  void _openFilterAndSortSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => AnimatedBuilder(
+        animation: _controller,
+        builder: (ctx, _) {
+          final allTags = _controller.tags;
+          final allCollections = _controller.collections;
+          final canManualSort = _controller.selectedCollectionIds.length == 1;
+          return SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Sắp xếp & Bộ lọc (${_controller.currentTab.label})',
+                        style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                      ),
+                      if (_controller.hasActiveFilters)
+                        TextButton(
+                          key: const Key('sheet_clear_filters_button'),
+                          onPressed: _controller.clearFilters,
+                          child: const Text('Bỏ lọc'),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 8.0),
+                  const Text(
+                    'Sắp xếp theo',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6.0),
+                  Wrap(
+                    spacing: 8.0,
+                    runSpacing: 6.0,
+                    children: ArticleSortOption.values.map((opt) {
+                      final enabled =
+                          opt != ArticleSortOption.collectionManualOrder ||
+                              canManualSort;
+                      return ChoiceChip(
+                        key: Key('sort_option_${opt.storageKey}'),
+                        label: Text(opt.label),
+                        selected: _controller.sortBy == opt,
+                        onSelected: enabled
+                            ? (_) => _controller.setSortOption(opt)
+                            : null,
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 12.0),
+                  const Text(
+                    'Độ khó (chọn nhiều = HOẶC)',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6.0),
+                  Wrap(
+                    spacing: 8.0,
+                    runSpacing: 6.0,
+                    children: Difficulty.values.map((d) {
+                      return FilterChip(
+                        key: Key('filter_diff_${d.storageKey}'),
+                        label: Text(d.label),
+                        selected: _controller.selectedDifficulties.contains(d),
+                        onSelected: (_) => _controller.toggleDifficultyFilter(d),
+                      );
+                    }).toList(),
+                  ),
+                  if (allTags.isNotEmpty) ...[
+                    const SizedBox(height: 12.0),
+                    const Text(
+                      'Thẻ (chọn nhiều = HOẶC)',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6.0),
+                    Wrap(
+                      spacing: 8.0,
+                      runSpacing: 6.0,
+                      children: allTags.map((t) {
+                        final key =
+                            VietnameseSearchNormalizer.tagDuplicateKey(t.name);
+                        return FilterChip(
+                          key: Key('filter_tag_$key'),
+                          label: Text('#${t.name}'),
+                          selected: _controller.selectedTagKeys.contains(key),
+                          onSelected: (_) =>
+                              _controller.toggleTagFilter(t.name),
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                  if (allCollections.isNotEmpty) ...[
+                    const SizedBox(height: 12.0),
+                    const Text(
+                      'Bộ sưu tập (chọn nhiều = HOẶC)',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6.0),
+                    Wrap(
+                      spacing: 8.0,
+                      runSpacing: 6.0,
+                      children: allCollections.map((c) {
+                        return FilterChip(
+                          key: Key('filter_collection_${c.id}'),
+                          label: Text(c.name),
+                          selected:
+                              _controller.selectedCollectionIds.contains(c.id),
+                          onSelected: (_) =>
+                              _controller.toggleCollectionFilter(c.id),
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                  const SizedBox(height: 12.0),
+                  SwitchListTile(
+                    key: const Key('filter_favorites_switch'),
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Chỉ hiển thị bài Yêu thích'),
+                    value: _controller.favoritesOnly,
+                    onChanged: (_) => _controller.toggleFavoritesOnly(),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -105,6 +315,18 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         actions: [
+          IconButton(
+            key: const Key('collections_button'),
+            tooltip: 'Bộ sưu tập',
+            icon: const Icon(Icons.collections_bookmark_outlined),
+            onPressed: _openCollections,
+          ),
+          IconButton(
+            key: const Key('manage_groups_button'),
+            tooltip: 'Quản lý nhóm',
+            icon: const Icon(Icons.folder_outlined),
+            onPressed: _openGroupManager,
+          ),
           IconButton(
             tooltip: 'Yêu thích',
             icon: Icon(
@@ -146,32 +368,89 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
           ),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(48.0),
-          child: SizedBox(
-            height: 44.0,
-            child: ListView.separated(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
-              scrollDirection: Axis.horizontal,
-              itemCount: groups.length + 1,
-              separatorBuilder: (_, _) => const SizedBox(width: 8.0),
-              itemBuilder: (context, index) {
-                if (index == 0) {
-                  final isSelected = _controller.selectedGroupId == null;
-                  return ChoiceChip(
-                    label: const Text('Tất cả nhóm'),
-                    selected: isSelected,
-                    onSelected: (_) => _controller.selectGroup(null),
-                  );
-                }
-                final group = groups[index - 1];
-                final isSelected = _controller.selectedGroupId == group.id;
-                return ChoiceChip(
-                  label: Text(group.name),
-                  selected: isSelected,
-                  onSelected: (_) => _controller.selectGroup(group.id),
-                );
-              },
-            ),
+          preferredSize: const Size.fromHeight(104.0),
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: const Key('home_search_input'),
+                        controller: _searchCtrl,
+                        onChanged: _controller.setSearchQuery,
+                        decoration: InputDecoration(
+                          hintText: 'Tìm mã, tên, mô tả hoặc thẻ...',
+                          prefixIcon: const Icon(Icons.search),
+                          suffixIcon: _searchCtrl.text.isNotEmpty
+                              ? IconButton(
+                                  key: const Key('clear_search_button'),
+                                  tooltip: 'Xóa tìm kiếm',
+                                  icon: const Icon(Icons.clear),
+                                  onPressed: () {
+                                    _searchCtrl.clear();
+                                    _controller.setSearchQuery('');
+                                  },
+                                )
+                              : null,
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(
+                            vertical: 8.0,
+                            horizontal: 12.0,
+                          ),
+                          border: const OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8.0),
+                    IconButton.filledTonal(
+                      key: const Key('filter_button'),
+                      tooltip: 'Lọc & Sắp xếp',
+                      icon: Icon(
+                        _controller.hasActiveFilters
+                            ? Icons.filter_alt
+                            : Icons.tune,
+                      ),
+                      onPressed: _openFilterAndSortSheet,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 4.0),
+              SizedBox(
+                height: 44.0,
+                child: ListView.separated(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 4.0,
+                  ),
+                  scrollDirection: Axis.horizontal,
+                  itemCount: groups.length + 1,
+                  separatorBuilder: (_, _) => const SizedBox(width: 8.0),
+                  itemBuilder: (context, index) {
+                    if (index == 0) {
+                      final isSelected = _controller.selectedGroupIds.isEmpty;
+                      return ChoiceChip(
+                        label: const Text('Tất cả nhóm'),
+                        selected: isSelected,
+                        onSelected: (_) => _controller.selectGroup(null),
+                      );
+                    }
+                    final group = groups[index - 1];
+                    final isSelected =
+                        _controller.selectedGroupIds.contains(group.id);
+                    return FilterChip(
+                      key: Key('home_group_chip_${group.id}'),
+                      label: Text(group.name),
+                      selected: isSelected,
+                      onSelected: (_) =>
+                          _controller.toggleGroupFilter(group.id),
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -193,12 +472,19 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
             child: articles.isEmpty
                 ? _buildEmptyState(context)
                 : ListView.builder(
+                    key: Key('articles_list_${currentKind.storageKey}'),
+                    controller: _scrollCtrl,
                     padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 96.0),
                     itemCount: articles.length,
                     itemBuilder: (context, index) {
                       final article = articles[index];
+                      final groupName = _controller.groupNameFor(
+                        article.kind,
+                        article.primaryGroupId,
+                      );
                       final metaParts = <String>[
                         article.code,
+                        groupName,
                         article.difficulty.label,
                         '${article.diagrams.length} sơ đồ',
                         if (article.isDraft) 'Nháp',
@@ -224,6 +510,16 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
                                   article.summary,
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
+                                ),
+                              if (article.tags.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 4.0),
+                                  child: Text(
+                                    article.tags.map((t) => '#$t').join(' '),
+                                    style: Theme.of(context).textTheme.bodySmall,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
                                 ),
                             ],
                           ),
@@ -325,7 +621,7 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
             const SizedBox(height: 8.0),
             Text(
               hasFilters
-                  ? 'Hãy xóa bộ lọc để xem lại danh sách.'
+                  ? 'Hãy xóa tìm kiếm hoặc bộ lọc để xem lại danh sách.'
                   : isPositionTab
                       ? 'Bạn có thể tạo bài hình bi mới hoặc mở bàn dựng nhanh ba bi.'
                       : 'Nhấn "Tạo bài" để soạn và lưu ngoại tuyến vào sổ tay.',

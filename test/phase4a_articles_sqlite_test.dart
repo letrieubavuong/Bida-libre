@@ -159,7 +159,7 @@ void main() {
         _sampleArticle(
           kind: ArticleKind.system,
           title: 'Bộ cộng trừ tham khảo',
-          primaryGroupId: 'sys_plus_minus',
+          primaryGroupId: 'sys_unclassified',
         ),
       );
       final posSaved = await repo1.saveArticle(
@@ -461,7 +461,7 @@ void main() {
         _sampleArticle(
           kind: ArticleKind.system,
           title: 'Bộ số an toàn',
-          primaryGroupId: 'sys_basic',
+          primaryGroupId: 'sys_unclassified',
           diagrams: [
             ArticleDiagram(
               id: 'safe_d1',
@@ -481,7 +481,7 @@ void main() {
           _sampleArticle(
             kind: ArticleKind.system,
             title: 'Bộ số bị lỗi giữa chừng',
-            primaryGroupId: 'sys_basic',
+            primaryGroupId: 'sys_unclassified',
             diagrams: [
               ArticleDiagram(
                 id: 'fail_d1',
@@ -515,7 +515,7 @@ void main() {
         _sampleArticle(
           kind: ArticleKind.system,
           title: 'Bộ số sau rollback',
-          primaryGroupId: 'sys_basic',
+          primaryGroupId: 'sys_unclassified',
         ),
       );
       expect(next.code, 'BS-002');
@@ -611,26 +611,26 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.byType(ArticleEditorScreen), findsOneWidget);
 
-        await tester.enterText(
-          find.byKey(const Key('article_title_input')),
-          'Gom góc 3 băng mẫu',
-        );
-        await tester.enterText(
-          find.byKey(const Key('article_goal_input')),
-          'Đưa 3 bi về góc bàn.',
-        );
-        await tester.enterText(
-          find.byKey(const Key('article_content_input')),
-          'Đánh mỏng má bi vàng ở góc.',
-        );
-
-        // Chạm 2/3 -> bật tràn mặt -> tắt tràn mặt để kiểm tra giữ nguyên 2/3
         final editorScroll = find
             .descendant(
               of: find.byType(ArticleEditorScreen),
               matching: find.byType(Scrollable),
             )
             .first;
+        await tester.enterText(
+          find.byKey(const Key('article_title_input')),
+          'Gom góc 3 băng mẫu',
+        );
+        final goalInput = find.byKey(const Key('article_goal_input'));
+        await tester.scrollUntilVisible(goalInput, 200.0, scrollable: editorScroll);
+        await tester.ensureVisible(goalInput);
+        await tester.enterText(goalInput, 'Đưa 3 bi về góc bàn.');
+        final contentInput = find.byKey(const Key('article_content_input'));
+        await tester.scrollUntilVisible(contentInput, 200.0, scrollable: editorScroll);
+        await tester.ensureVisible(contentInput);
+        await tester.enterText(contentInput, 'Đánh mỏng má bi vàng ở góc.');
+
+        // Chạm 2/3 -> bật tràn mặt -> tắt tràn mặt để kiểm tra giữ nguyên 2/3
         final twoThirds = find.byKey(const Key('stroke_mode_two_thirds'));
         await tester.scrollUntilVisible(twoThirds, 250.0, scrollable: editorScroll);
         await tester.ensureVisible(twoThirds);
@@ -849,7 +849,7 @@ void main() {
             _sampleArticle(
               kind: ArticleKind.system,
               title: 'Lưu lần 1',
-              primaryGroupId: 'sys_basic',
+              primaryGroupId: 'sys_unclassified',
               isDraft: true,
             ),
           );
@@ -857,7 +857,7 @@ void main() {
             _sampleArticle(
               kind: ArticleKind.system,
               title: 'Lưu trùng',
-              primaryGroupId: 'sys_basic',
+              primaryGroupId: 'sys_unclassified',
               isDraft: true,
             ),
           );
@@ -1150,16 +1150,23 @@ void main() {
           find.byKey(const Key('article_title_input')),
           'Bài kiểm tra khóa form',
         );
-        await tester.enterText(
-          find.byKey(const Key('article_content_input')),
-          'Nội dung cần giữ nguyên nếu lỗi',
-        );
         final editorScroll = find
             .descendant(
               of: find.byType(ArticleEditorScreen),
               matching: find.byType(Scrollable),
             )
             .first;
+        final contentInput = find.byKey(const Key('article_content_input'));
+        await tester.scrollUntilVisible(
+          contentInput,
+          200.0,
+          scrollable: editorScroll,
+        );
+        await tester.ensureVisible(contentInput);
+        await tester.enterText(
+          contentInput,
+          'Nội dung cần giữ nguyên nếu lỗi',
+        );
         final addStepBtn = find.byKey(const Key('add_step_button'));
         await tester.scrollUntilVisible(
           addStepBtn,

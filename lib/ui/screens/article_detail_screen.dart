@@ -174,6 +174,46 @@ class _ArticleDetailScreenState extends State<ArticleDetailScreen> {
                     ),
                 ],
               ),
+              if (article.tags.isNotEmpty) ...[
+                const SizedBox(height: 8.0),
+                Wrap(
+                  spacing: 6.0,
+                  runSpacing: 4.0,
+                  children: article.tags
+                      .map(
+                        (t) => Chip(
+                          label: Text('#$t'),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      )
+                      .toList(),
+                ),
+              ],
+              Builder(
+                builder: (context) {
+                  final cols = _controller.getCollectionsForArticle(article.id);
+                  if (cols.isEmpty) return const SizedBox.shrink();
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 8.0),
+                    child: Wrap(
+                      spacing: 6.0,
+                      runSpacing: 4.0,
+                      children: cols
+                          .map(
+                            (c) => Chip(
+                              avatar: const Icon(
+                                Icons.collections_bookmark_outlined,
+                                size: 16.0,
+                              ),
+                              label: Text(c.name),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  );
+                },
+              ),
               const SizedBox(height: 12.0),
               Text(
                 article.title,

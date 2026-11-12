@@ -37,6 +37,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
   late String _primaryGroupId;
   late Difficulty _difficulty;
   late bool _isDraft;
+  late List<String> _tags;
   late StrokeParameters _stroke;
   late List<ArticleDiagram> _diagrams;
   late List<TextEditingController> _stepControllers;
@@ -56,6 +57,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
   late final TextEditingController _tipNoteCtrl;
   late final TextEditingController _forceCtrl;
   late final TextEditingController _styleCtrl;
+  late final TextEditingController _tagInputCtrl;
 
   late final String _workingArticleId;
   late final Article _initialBaseline;
@@ -79,6 +81,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
         _tipNoteCtrl,
         _forceCtrl,
         _styleCtrl,
+        _tagInputCtrl,
       ];
 
   void _onFormFieldChanged() {
@@ -96,9 +99,12 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
 
     final groups = widget.controller.groupsForKind(_kind);
     _primaryGroupId = existing?.primaryGroupId ??
-        (groups.isNotEmpty ? groups.first.id : 'unclassified');
+        (groups.isNotEmpty
+            ? groups.first.id
+            : DefaultEditorialGroups.unclassifiedIdFor(_kind));
     _difficulty = existing?.difficulty ?? Difficulty.unrated;
     _isDraft = existing?.isDraft ?? false;
+    _tags = List<String>.from(existing?.tags ?? const []);
     _stroke = existing?.strokeParameters ?? const StrokeParameters.defaults();
     _diagrams = List<ArticleDiagram>.from(existing?.diagrams ?? const []);
 
@@ -120,6 +126,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
     _tipNoteCtrl = TextEditingController(text: _stroke.tipNote);
     _forceCtrl = TextEditingController(text: _stroke.forceText);
     _styleCtrl = TextEditingController(text: _stroke.strokeStyleText);
+    _tagInputCtrl = TextEditingController();
 
     _stepControllers = (existing?.steps ?? const [])
         .map((s) => TextEditingController(text: s))
@@ -276,7 +283,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
       title: _titleCtrl.text,
       summary: _summaryCtrl.text.trim(),
       primaryGroupId: _primaryGroupId,
-      tags: widget.existingArticle?.tags ?? const [],
+      tags: List<String>.unmodifiable(_tags),
       difficulty: _difficulty,
       goal: _goalCtrl.text.trim(),
       content: _contentCtrl.text.trim(),
@@ -317,6 +324,27 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
       return true;
     }
     return _buildCurrentDraft() != _initialBaseline;
+  }
+
+  void _addTag(String raw) {
+    final clean = VietnameseSearchNormalizer.cleanTagDisplay(raw);
+    if (clean.isEmpty) return;
+    final key = VietnameseSearchNormalizer.tagDuplicateKey(clean);
+    final alreadyExists = _tags.any(
+      (t) => VietnameseSearchNormalizer.tagDuplicateKey(t) == key,
+    );
+    setState(() {
+      if (!alreadyExists) {
+        _tags.add(clean);
+      }
+      _tagInputCtrl.clear();
+    });
+  }
+
+  void _removeTag(int index) {
+    setState(() {
+      _tags.removeAt(index);
+    });
   }
 
   Future<bool> _saveArticle({bool? forceDraft}) async {
@@ -548,7 +576,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                                     widget.controller.groupsForKind(k);
                                 _primaryGroupId = newGroups.isNotEmpty
                                     ? newGroups.first.id
-                                    : 'unclassified';
+                                    : DefaultEditorialGroups.unclassifiedIdFor(k);
                               });
                             },
                     );
@@ -642,6 +670,83 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                       ),
                     ),
                   ],
+                ),
+
+                const SizedBox(height: 12.0),
+                const Text(
+                  'Thẻ (tùy chọn)',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 6.0),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: const Key('tag_input'),
+                        controller: _tagInputCtrl,
+                        enabled: !saving,
+                        decoration: const InputDecoration(
+                          labelText: 'Thêm thẻ (vd: cu-lê, trô kéo)',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        onSubmitted: saving ? null : _addTag,
+                      ),
+                    ),
+                    const SizedBox(width: 8.0),
+                    FilledButton.tonal(
+                      key: const Key('add_tag_button'),
+                      onPressed:
+                          saving ? null : () => _addTag(_tagInputCtrl.text),
+                      child: const Text('Thêm'),
+                    ),
+                  ],
+                ),
+                if (_tags.isNotEmpty) ...[
+                  const SizedBox(height: 8.0),
+                  Wrap(
+                    spacing: 6.0,
+                    runSpacing: 4.0,
+                    children: [
+                      for (var i = 0; i < _tags.length; i++)
+                        InputChip(
+                          key: Key('article_tag_chip_$i'),
+                          label: Text(_tags[i]),
+                          onDeleted: saving ? null : () => _removeTag(i),
+                        ),
+                    ],
+                  ),
+                ],
+                Builder(
+                  builder: (context) {
+                    final activeKeys = _tags
+                        .map(VietnameseSearchNormalizer.tagDuplicateKey)
+                        .toSet();
+                    final suggestions = widget.controller
+                        .suggestTags(_tagInputCtrl.text)
+                        .where(
+                          (s) => !activeKeys.contains(
+                            VietnameseSearchNormalizer.tagDuplicateKey(s),
+                          ),
+                        )
+                        .take(8)
+                        .toList(growable: false);
+                    if (suggestions.isEmpty) return const SizedBox.shrink();
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 6.0),
+                      child: Wrap(
+                        spacing: 6.0,
+                        runSpacing: 4.0,
+                        children: [
+                          for (final sug in suggestions)
+                            ActionChip(
+                              label: Text('+ $sug'),
+                              onPressed: saving ? null : () => _addTag(sug),
+                            ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
 
                 const Divider(height: 32.0),
