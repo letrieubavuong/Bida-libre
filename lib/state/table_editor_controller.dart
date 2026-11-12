@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../geometry/annotation_geometry.dart';
 import '../geometry/path_geometry.dart';
+import '../geometry/scene_validator.dart';
 import '../geometry/table_geometry.dart';
 import '../models/models.dart';
 import '../repositories/scene_storage.dart';
@@ -251,21 +252,13 @@ class TableEditorController extends ChangeNotifier {
     return null;
   }
 
-  Map<String, String> get invalidPathWarnings {
-    final map = <String, String>{};
-    for (final path in _scene.paths) {
-      final err = PathGeometry.validatePath(
-        path,
-        _scene.balls,
-        width: _scene.width,
-        height: _scene.height,
-      );
-      if (err != null) {
-        map[path.id] = err;
-      }
-    }
-    return Map<String, String>.unmodifiable(map);
-  }
+  SceneValidationReport get validationReport => SceneValidator.inspect(_scene);
+
+  Map<String, String> get invalidPathWarnings =>
+      SceneValidator.inspect(_scene).pathErrors;
+
+  Map<String, String> get annotationRuleWarnings =>
+      SceneValidator.inspect(_scene).annotationRuleWarnings;
 
   List<DiagramScene> get undoHistory =>
       List<DiagramScene>.unmodifiable(_undoStack);
@@ -1706,6 +1699,13 @@ class TableEditorController extends ChangeNotifier {
     }
 
     final snapshotToSave = _scene;
+    final completeSaveError = SceneValidator.validateCompleteForSave(snapshotToSave);
+    if (completeSaveError != null) {
+      _saveError = completeSaveError;
+      _safeNotify();
+      return SaveOutcome(SaveStatus.error, completeSaveError);
+    }
+
     _isSaving = true;
     _saveError = null;
     _safeNotify();

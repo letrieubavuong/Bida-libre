@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:libre_billiard_notebook/geometry/annotation_geometry.dart';
 import 'package:libre_billiard_notebook/geometry/path_geometry.dart';
+import 'package:libre_billiard_notebook/geometry/scene_validator.dart';
 import 'package:libre_billiard_notebook/geometry/table_geometry.dart';
 import 'package:libre_billiard_notebook/models/models.dart';
 import 'package:libre_billiard_notebook/repositories/scene_storage.dart';
@@ -735,16 +736,282 @@ void main() {
       final afterDrag = controller.annotations.first;
       expect(AnnotationGeometry.isOnWoodRailBand(afterDrag.position), isTrue);
 
-      // 4. Schema validation cũng từ chối nếu JSON cố tình đặt label vào giữa mặt nỉ
-      final invalidJson = controller.scene.withAnnotations([
+      // 4. Quy tắc mới vẫn giữ nguyên khả năng đọc file bản cũ có label ở mặt nỉ
+      // mà không coi là tệp hỏng hay tự sửa tọa độ
+      final legacyJson = controller.scene.withAnnotations([
         DiagramAnnotation(
-          id: 'bad_label',
+          id: 'legacy_label',
           type: AnnotationType.label,
           position: const DiagramPoint(94, 188),
-          text: 'Lạc vào nỉ',
+          text: 'Nhãn bản cũ',
         ),
       ]).toJson();
-      expect(() => DiagramScene.fromJson(invalidJson), throwsFormatException);
+      final decodedLegacy = DiagramScene.fromJson(legacyJson);
+      expect(decodedLegacy.annotations.first.position, const DiagramPoint(94, 188));
+      expect(
+        SceneValidator.inspect(decodedLegacy).annotationRuleWarnings.containsKey('legacy_label'),
+        isTrue,
+      );
+    });
+  });
+
+  group('Phản biện Phase 3 — Thống nhất kiểm tra khi lưu & không coi quy tắc mới là tệp hỏng', () {
+    test('Tách model/validator thuần Dart không phụ thuộc dart:ui hay Flutter', () {
+      for (final path in const [
+        'lib/models/diagram_scene.dart',
+        'lib/geometry/pure_path_geometry.dart',
+        'lib/geometry/pure_annotation_geometry.dart',
+        'lib/geometry/scene_validator.dart',
+      ]) {
+        final content = File(path).readAsStringSync();
+        expect(content.contains("import 'dart:ui'"), isFalse, reason: path);
+        expect(content.contains('package:flutter/'), isFalse, reason: path);
+      }
+    });
+
+    test('Cubic hai đầu hợp lệ nhưng phình vượt băng bị chặn lưu hoàn chỉnh; bản cũ trên đĩa không đổi',
+        () async {
+      final tempDir =
+          await Directory.systemTemp.createTemp('libre_billiard_p3_save_guard_');
+      addTearDown(() async {
+        if (await tempDir.exists()) {
+          await tempDir.delete(recursive: true);
+        }
+      });
+
+      final storage = FileSceneStorage(directoryProvider: () async => tempDir);
+      final validScene = DiagramScene.defaultInitial(id: 'good_v1').copyWith(
+        paths: [
+          GuidePath(
+            id: 'p_good',
+            ownerBallId: 'ball_white',
+            segments: const [
+              PathSegment.line(
+                start: DiagramPoint(40, 100),
+                end: DiagramPoint(120, 220),
+              ),
+            ],
+          ),
+        ],
+      );
+      await storage.saveScene(validScene);
+
+      // Tạo đường cong có 2 đầu hợp lệ [16, 100] -> [16, 220] nhưng tay nắm kéo phình qua x = 4
+      final bulgingScene = DiagramScene.defaultInitial(id: 'bulging_attempt').copyWith(
+        paths: [
+          GuidePath(
+            id: 'p_bulge',
+            ownerBallId: 'ball_white',
+            role: PathRole.ballCenter,
+            segments: const [
+              PathSegment.cubic(
+                start: DiagramPoint(16, 100),
+                control1: DiagramPoint(-16, 130),
+                control2: DiagramPoint(-16, 190),
+                end: DiagramPoint(16, 220),
+              ),
+            ],
+          ),
+        ],
+      );
+
+      final controller = TableEditorController(
+        initialScene: bulgingScene,
+        storage: storage,
+      );
+      final outcome = await controller.saveToStorage();
+      expect(outcome.status, SaveStatus.error);
+      expect(outcome.message, contains('p_bulge'));
+
+      await expectLater(
+        () => storage.saveScene(bulgingScene),
+        throwsFormatException,
+      );
+
+      // Bản đã lưu trước đó trên đĩa vẫn nguyên vẹn là validScene
+      final onDisk = await storage.loadScene();
+      expect(onDisk, validScene);
+    });
+
+    test('Phát hiện đường có đoạn không liên tục, đầu liên kết lệch tâm bi & đoạn suy biến khi lưu',
+        () async {
+      final storage = MemorySceneStorage();
+
+      // 1. Đoạn không liên tục: seg0 kết thúc (80, 120) != seg1 bắt đầu (115, 150)
+      final discontinuousScene = DiagramScene.defaultInitial(id: 'disc').withPaths([
+        GuidePath(
+          id: 'p_gap',
+          ownerBallId: 'ball_white',
+          segments: const [
+            PathSegment.line(
+              start: DiagramPoint(40, 80),
+              end: DiagramPoint(80, 120),
+            ),
+            PathSegment.line(
+              start: DiagramPoint(115, 150),
+              end: DiagramPoint(140, 220),
+            ),
+          ],
+        ),
+      ]);
+      final discCtrl = TableEditorController(
+        initialScene: discontinuousScene,
+        storage: storage,
+      );
+      expect(discCtrl.invalidPathWarnings.containsKey('p_gap'), isTrue);
+      final discOutcome = await discCtrl.saveToStorage();
+      expect(discOutcome.status, SaveStatus.error);
+      expect(discOutcome.message, contains('không liên tục'));
+      await expectLater(
+        () => storage.saveScene(discontinuousScene),
+        throwsFormatException,
+      );
+
+      // 2. Điểm đầu gắn liên kết bi trắng (94, 94) nhưng đầu đoạn lại ở (130, 150)
+      final detachedAnchorScene = DiagramScene.defaultInitial(id: 'anchor_bad').withPaths([
+        GuidePath(
+          id: 'p_detached',
+          ownerBallId: 'ball_white',
+          startAnchorBallId: 'ball_white',
+          segments: const [
+            PathSegment.line(
+              start: DiagramPoint(130, 150),
+              end: DiagramPoint(150, 260),
+            ),
+          ],
+        ),
+      ]);
+      final anchorCtrl = TableEditorController(
+        initialScene: detachedAnchorScene,
+        storage: storage,
+      );
+      expect(anchorCtrl.invalidPathWarnings.containsKey('p_detached'), isTrue);
+      final anchorOutcome = await anchorCtrl.saveToStorage();
+      expect(anchorOutcome.status, SaveStatus.error);
+      expect(anchorOutcome.message, contains('khớp tâm bi'));
+
+      // 3. Đoạn suy biến độ dài 0
+      final zeroDegScene = DiagramScene.defaultInitial(id: 'zero_deg').withPaths([
+        GuidePath(
+          id: 'p_zero',
+          ownerBallId: 'ball_white',
+          segments: const [
+            PathSegment.cubic(
+              start: DiagramPoint(90, 90),
+              control1: DiagramPoint(90, 90),
+              control2: DiagramPoint(90, 90),
+              end: DiagramPoint(90, 90),
+            ),
+          ],
+        ),
+      ]);
+      expect(SceneValidator.inspect(zeroDegScene).pathErrors.containsKey('p_zero'), isTrue);
+      expect(SceneValidator.validateCompleteForSave(zeroDegScene), isNotNull);
+    });
+
+    test(
+        'Sơ đồ Phase 3 trước có label trong mặt bàn: mở được giữ nguyên bản gốc không bị thay bằng .bak; JSON hỏng vẫn phục hồi từ .bak',
+        () async {
+      final tempDir =
+          await Directory.systemTemp.createTemp('libre_billiard_p3_legacy_compat_');
+      addTearDown(() async {
+        if (await tempDir.exists()) {
+          await tempDir.delete(recursive: true);
+        }
+      });
+
+      final storage = FileSceneStorage(directoryProvider: () async => tempDir);
+
+      // Tạo bản .bak chứa sơ đồ khác để kiểm chứng nếu nhầm là tệp hỏng sẽ lộ ngay
+      final bakScene = DiagramScene.defaultInitial(id: 'old_bak_scene').withPaths([
+        GuidePath(
+          id: 'p_from_bak',
+          ownerBallId: 'ball_yellow',
+          segments: const [
+            PathSegment.line(
+              start: DiagramPoint(70, 200),
+              end: DiagramPoint(70, 320),
+            ),
+          ],
+        ),
+      ]);
+      final bakFile =
+          File('${tempDir.path}${Platform.pathSeparator}${FileSceneStorage.defaultFileName}.bak');
+      await bakFile.writeAsString(jsonEncode(bakScene.toJson()));
+
+      // Tệp chính hợp lệ JSON từ Phase 3 trước: có label và sequence nằm trong mặt nỉ
+      final legacyPrimary = DiagramScene.defaultInitial(id: 'legacy_primary').copyWith(
+        annotations: [
+          DiagramAnnotation(
+            id: 'ann_legacy_lbl',
+            type: AnnotationType.label,
+            position: const DiagramPoint(94, 188),
+            text: 'Nhãn bản trước',
+            colorValue: 0xFFFFFFFF,
+          ),
+          DiagramAnnotation(
+            id: 'ann_legacy_seq',
+            type: AnnotationType.sequence,
+            position: const DiagramPoint(60, 120),
+            text: '1',
+          ),
+        ],
+      );
+      final primaryFile =
+          File('${tempDir.path}${Platform.pathSeparator}${FileSceneStorage.defaultFileName}');
+      await primaryFile.writeAsString(jsonEncode(legacyPrimary.toJson()));
+
+      // 1. Tải lại -> phải mở đúng legacyPrimary, giữ nguyên tọa độ gốc, KHÔNG bị thay bằng bakScene và KHÔNG tạo .corrupt
+      final loaded = await storage.loadScene();
+      expect(loaded, legacyPrimary);
+      expect(loaded!.annotations.first.position, const DiagramPoint(94, 188));
+      expect(
+        tempDir.listSync().any((e) => e.path.contains('.corrupt')),
+        isFalse,
+      );
+
+      // 2. Nạp vào controller -> giữ nguyên đối tượng và cảnh báo quy tắc vị trí
+      final controller = TableEditorController(storage: storage);
+      expect((await controller.loadFromStorage(force: true)).status, LoadStatus.loaded);
+      expect(controller.annotations.length, 2);
+      expect(controller.annotations.first.position, const DiagramPoint(94, 188));
+      expect(controller.annotationRuleWarnings.containsKey('ann_legacy_lbl'), isTrue);
+
+      // 3. Nếu tệp chính thực sự bị hỏng JSON -> vẫn phục hồi từ .bak và giữ .corrupt như thiết kế
+      await primaryFile.writeAsString('{broken_json_not_valid');
+      final recoveredFromCorrupt = await storage.loadScene();
+      expect(recoveredFromCorrupt, bakScene);
+      expect(
+        tempDir.listSync().any((e) => e.path.contains('.corrupt')),
+        isTrue,
+      );
+    });
+
+    testWidgets(
+        'Mở sơ đồ Phase 3 trước có nhãn trong mặt nỉ trên UI giữ nguyên nhãn gốc và hiện giải thích rõ',
+        (WidgetTester tester) async {
+      final legacyPrimary = DiagramScene.defaultInitial(id: 'legacy_ui').copyWith(
+        annotations: [
+          DiagramAnnotation(
+            id: 'ann_legacy_lbl',
+            type: AnnotationType.label,
+            position: const DiagramPoint(94, 188),
+            text: 'Nhãn bản trước',
+          ),
+        ],
+      );
+      final storage = MemorySceneStorage(initialScene: legacyPrimary);
+      final controller = TableEditorController(storage: storage);
+      expect((await controller.loadFromStorage(force: true)).status, LoadStatus.loaded);
+
+      await tester.pumpWidget(
+        MaterialApp(home: TableStageScreen(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+
+      expect(controller.annotations.first.position, const DiagramPoint(94, 188));
+      expect(find.byKey(const Key('invalid_path_warning_banner')), findsOneWidget);
+      expect(find.textContaining('dải băng gỗ'), findsOneWidget);
     });
   });
 }

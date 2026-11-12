@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../geometry/scene_validator.dart';
 import '../models/models.dart';
 
 /// Giao diện lưu/tải một sơ đồ (Phase 2).
@@ -117,7 +118,7 @@ class FileSceneStorage implements SceneStorage {
 
   @override
   Future<void> saveScene(DiagramScene scene) async {
-    final validationError = scene.validateScene();
+    final validationError = SceneValidator.validateCompleteForSave(scene);
     if (validationError != null) {
       throw FormatException(validationError);
     }
@@ -171,7 +172,7 @@ class MemorySceneStorage implements SceneStorage {
 
   @override
   Future<void> saveScene(DiagramScene scene) async {
-    final err = scene.validateScene();
+    final err = SceneValidator.validateCompleteForSave(scene);
     if (err != null) throw FormatException(err);
     _stored = scene;
   }

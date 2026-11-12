@@ -853,6 +853,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
   Widget build(BuildContext context) {
     final draggingOrLoading = _controller.isEditingLocked;
     final warnings = _controller.invalidPathWarnings;
+    final ruleNotices = _controller.annotationRuleWarnings;
 
     return PopScope(
       canPop: !draggingOrLoading && !_controller.hasUnsavedChanges,
@@ -1051,8 +1052,10 @@ class _TableStageScreenState extends State<TableStageScreen> {
                     ),
                   ),
 
-                  // Cảnh báo lỗi đường (nếu có) hoặc lỗi tải
-                  if (warnings.isNotEmpty || _controller.loadError != null)
+                  // Cảnh báo lỗi đường, lỗi tải hoặc nhắc vị trí nhãn/số thứ tự bản cũ
+                  if (warnings.isNotEmpty ||
+                      _controller.loadError != null ||
+                      ruleNotices.isNotEmpty)
                     Positioned(
                       top: 64.0,
                       left: 12.0,
@@ -1081,7 +1084,9 @@ class _TableStageScreenState extends State<TableStageScreen> {
                                     child: Text(
                                       _controller.loadError != null
                                           ? 'Lỗi tải sơ đồ: ${_controller.loadError}'
-                                          : warnings.values.first,
+                                          : (warnings.isNotEmpty
+                                              ? warnings.values.first
+                                              : ruleNotices.values.first),
                                       key: const Key(
                                           'invalid_path_warning_banner'),
                                       style: const TextStyle(

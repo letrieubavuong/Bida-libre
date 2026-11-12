@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import '../models/models.dart';
+import 'pure_annotation_geometry.dart';
 import 'table_constants.dart';
 import 'table_geometry.dart';
 
@@ -14,106 +15,39 @@ class AnnotationHitResult {
   });
 }
 
-/// Hình học tĩnh cho chú thích trên bàn (nhãn chữ, số thứ tự, chấm mốc, vùng tròn, vùng chữ nhật).
+/// Hình học tĩnh cho chú thích trên bàn; logic vị trí/kẹp thuần Dart nằm ở [PureAnnotationGeometry].
 class AnnotationGeometry {
   const AnnotationGeometry._();
 
-  static const double _eps = 1e-6;
-
   static bool isZoneType(AnnotationType type) =>
-      type == AnnotationType.circleZone || type == AnnotationType.rectZone;
+      PureAnnotationGeometry.isZoneType(type);
 
-  /// Nhãn chữ và số thứ tự chỉ nằm trên phần dải băng gỗ xung quanh lòng bàn.
   static bool isRailOnlyType(AnnotationType type) =>
-      type == AnnotationType.label || type == AnnotationType.sequence;
+      PureAnnotationGeometry.isRailOnlyType(type);
 
   static bool isOnWoodRailBand(
     DiagramPoint point, {
     double width = TableConstants.playfieldWidth,
     double height = TableConstants.playfieldHeight,
-  }) {
-    if (!point.isFinite) return false;
-    final frameMinX = TableConstants.frameMinX;
-    final frameMinY = TableConstants.frameMinY;
-    final frameMaxX =
-        width + (TableConstants.frameMaxX - TableConstants.playfieldWidth);
-    final frameMaxY =
-        height + (TableConstants.frameMaxY - TableConstants.playfieldHeight);
-
-    final railMinX = TableConstants.railMinX;
-    final railMinY = TableConstants.railMinY;
-    final railMaxX =
-        width + (TableConstants.railMaxX - TableConstants.playfieldWidth);
-    final railMaxY =
-        height + (TableConstants.railMaxY - TableConstants.playfieldHeight);
-
-    final inOuterFrame = point.x >= frameMinX - _eps &&
-        point.x <= frameMaxX + _eps &&
-        point.y >= frameMinY - _eps &&
-        point.y <= frameMaxY + _eps;
-    if (!inOuterFrame) return false;
-
-    final outsideInnerCloth = point.x <= railMinX + _eps ||
-        point.x >= railMaxX - _eps ||
-        point.y <= railMinY + _eps ||
-        point.y >= railMaxY - _eps;
-    return outsideInnerCloth;
-  }
+  }) =>
+      PureAnnotationGeometry.isOnWoodRailBand(
+        point,
+        width: width,
+        height: height,
+      );
 
   static DiagramPoint clampPosition(
     DiagramPoint raw, {
     AnnotationType? type,
     double width = TableConstants.playfieldWidth,
     double height = TableConstants.playfieldHeight,
-  }) {
-    final safeX = raw.x.isFinite ? raw.x : width / 2.0;
-    final safeY = raw.y.isFinite ? raw.y : height / 2.0;
-
-    final frameMinX = TableConstants.frameMinX;
-    final frameMinY = TableConstants.frameMinY;
-    final frameMaxX =
-        width + (TableConstants.frameMaxX - TableConstants.playfieldWidth);
-    final frameMaxY =
-        height + (TableConstants.frameMaxY - TableConstants.playfieldHeight);
-
-    if (type != null && isRailOnlyType(type)) {
-      final railMinX = TableConstants.railMinX;
-      final railMinY = TableConstants.railMinY;
-      final railMaxX =
-          width + (TableConstants.railMaxX - TableConstants.playfieldWidth);
-      final railMaxY =
-          height + (TableConstants.railMaxY - TableConstants.playfieldHeight);
-
-      final x = safeX.clamp(frameMinX, frameMaxX).toDouble();
-      final y = safeY.clamp(frameMinY, frameMaxY).toDouble();
-
-      if (x > railMinX && x < railMaxX && y > railMinY && y < railMaxY) {
-        final dLeft = x - railMinX;
-        final dRight = railMaxX - x;
-        final dBottom = y - railMinY;
-        final dTop = railMaxY - y;
-        final minDist = [dLeft, dRight, dBottom, dTop]
-            .reduce((a, b) => a < b ? a : b);
-        if (minDist == dLeft) return DiagramPoint(railMinX, y);
-        if (minDist == dRight) return DiagramPoint(railMaxX, y);
-        if (minDist == dBottom) return DiagramPoint(x, railMinY);
-        return DiagramPoint(x, railMaxY);
-      }
-      return DiagramPoint(x, y);
-    }
-
-    if (type == AnnotationType.marker) {
-      return DiagramPoint(
-        safeX.clamp(frameMinX, frameMaxX).toDouble(),
-        safeY.clamp(frameMinY, frameMaxY).toDouble(),
+  }) =>
+      PureAnnotationGeometry.clampPosition(
+        raw,
+        type: type,
+        width: width,
+        height: height,
       );
-    }
-
-    return DiagramPoint(
-      safeX.clamp(0.0, width).toDouble(),
-      safeY.clamp(0.0, height).toDouble(),
-    );
-  }
 
   static Color defaultColorFor(AnnotationType type) {
     switch (type) {
