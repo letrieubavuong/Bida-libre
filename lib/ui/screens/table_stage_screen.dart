@@ -41,6 +41,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
   final GlobalKey _toolbarKey = GlobalKey();
   Offset? _toolbarOffset;
   bool _toolbarCollapsed = false;
+  bool _contextPanelCollapsed = false;
   bool _isDraggingToolbar = false;
 
   final ValueNotifier<String?> _coordinateErrorNotifier =
@@ -1382,6 +1383,43 @@ class _TableStageScreenState extends State<TableStageScreen> {
   }
 
   Widget _buildFloatingContextPanel(BuildContext context) {
+    if (_contextPanelCollapsed) {
+      return Material(
+        key: const Key('floating_panel_collapsed_pill'),
+        elevation: 6.0,
+        borderRadius: BorderRadius.circular(20.0),
+        color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.96),
+        child: InkWell(
+          key: const Key('floating_panel_expand_button'),
+          borderRadius: BorderRadius.circular(20.0),
+          onTap: () => setState(() => _contextPanelCollapsed = false),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 8.0),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.tune,
+                  size: 16.0,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 6.0),
+                Text(
+                  'Thuộc tính',
+                  style: TextStyle(
+                    fontSize: 12.0,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+                const SizedBox(width: 4.0),
+                const Icon(Icons.expand_less, size: 16.0),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     if (_controller.toolMode == EditorToolMode.drawPolyline) {
       return _buildFloatingDrawPanel(context);
     }
@@ -1647,6 +1685,14 @@ class _TableStageScreenState extends State<TableStageScreen> {
                 ),
               ),
             ],
+            IconButton(
+              key: const Key('floating_panel_collapse_button'),
+              tooltip: 'Thu gọn thuộc tính',
+              constraints: const BoxConstraints(minWidth: 40.0, minHeight: 40.0),
+              padding: EdgeInsets.zero,
+              icon: const Icon(Icons.expand_more, size: 20.0),
+              onPressed: () => setState(() => _contextPanelCollapsed = true),
+            ),
           ],
         ),
       ),

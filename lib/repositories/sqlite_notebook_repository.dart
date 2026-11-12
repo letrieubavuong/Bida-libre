@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
@@ -70,6 +71,14 @@ class SqliteNotebookRepository implements NotebookRepository {
   ArticleAssetStore get assetStore => _assetStore;
 
   bool get isInitialized => _db != null;
+
+  @visibleForTesting
+  Database? get dbForTesting => _db;
+
+  @visibleForTesting
+  Future<void> reloadCacheForTesting() async {
+    if (_db != null) await _reloadCacheFromDb(_db!);
+  }
 
   @override
   Future<void> initialize() {

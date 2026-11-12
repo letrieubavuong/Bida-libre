@@ -45,6 +45,19 @@ class ArticleDetailBody extends StatelessWidget {
     }
   }
 
+  void _openDiagramViewer(BuildContext context, int initialIndex) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => DiagramViewerScreen(
+          diagrams: article.diagrams,
+          initialIndex: initialIndex,
+          articleCode: article.code,
+          articleTitle: article.title,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final stroke = article.strokeParameters;
@@ -193,19 +206,34 @@ class ArticleDetailBody extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Sơ đồ ${i + 1}',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'Sơ đồ ${i + 1}',
+                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                        ),
+                        TextButton.icon(
+                          key: Key('open_diagram_viewer_$i'),
+                          icon: const Icon(Icons.fullscreen, size: 18.0),
+                          label: const Text('Xem lớn'),
+                          onPressed: () => _openDiagramViewer(context, i),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 8.0),
                     Center(
-                      child: SizedBox(
-                        height: 280.0,
-                        child: BilliardTableReadOnlyView(
-                          key: Key('readonly_diagram_$i'),
-                          scene: article.diagrams[i].scene,
+                      child: InkWell(
+                        onTap: () => _openDiagramViewer(context, i),
+                        borderRadius: BorderRadius.circular(8.0),
+                        child: SizedBox(
+                          height: 280.0,
+                          child: BilliardTableReadOnlyView(
+                            key: Key('readonly_diagram_$i'),
+                            scene: article.diagrams[i].scene,
+                          ),
                         ),
                       ),
                     ),
@@ -399,8 +427,205 @@ class _ArticleImageCardState extends State<_ArticleImageCard> {
   }
 }
 
+/// Màn hình xem sơ đồ vector lớn với zoom & pan (Phase 6):
+/// - Chế độ chỉ đọc hoàn toàn, không thể kéo bi hoặc sửa đường.
+/// - Hỗ trợ pinch zoom / 2-finger pan qua InteractiveViewer.
+/// - Nút "Vừa màn hình" (Đặt lại góc nhìn) khôi phục ma trận về gốc.
+/// - Cho phép chuyển nhanh giữa các sơ đồ của cùng bài viết (nếu có nhiều sơ đồ).
+/// - Phân biệt rõ là Sơ đồ vector với Ảnh chụp sách.
+class DiagramViewerScreen extends StatefulWidget {
+  final List<ArticleDiagram> diagrams;
+  final int initialIndex;
+  final String articleCode;
+  final String articleTitle;
+
+  const DiagramViewerScreen({
+    super.key,
+    required this.diagrams,
+    this.initialIndex = 0,
+    required this.articleCode,
+    required this.articleTitle,
+  });
+
+  @override
+  State<DiagramViewerScreen> createState() => _DiagramViewerScreenState();
+}
+
+class _DiagramViewerScreenState extends State<DiagramViewerScreen> {
+  late int _currentIndex;
+  final TransformationController _transCtrl = TransformationController();
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex.clamp(0, widget.diagrams.length - 1);
+  }
+
+  @override
+  void dispose() {
+    _transCtrl.dispose();
+    super.dispose();
+  }
+
+  void _resetZoom() {
+    _transCtrl.value = Matrix4.identity();
+  }
+
+  void _prevDiagram() {
+    if (_currentIndex > 0) {
+      setState(() {
+        _currentIndex--;
+        _resetZoom();
+      });
+    }
+  }
+
+  void _nextDiagram() {
+    if (_currentIndex < widget.diagrams.length - 1) {
+      setState(() {
+        _currentIndex++;
+        _resetZoom();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.diagrams.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Xem sơ đồ')),
+        body: const Center(child: Text('Bài viết không có sơ đồ nào.')),
+      );
+    }
+
+    final diag = widget.diagrams[_currentIndex];
+    final total = widget.diagrams.length;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.articleCode.isNotEmpty ? widget.articleCode : 'Sơ đồ vector',
+              style: const TextStyle(fontSize: 16.0, fontWeight: FontWeight.bold),
+            ),
+            Text(
+              total > 1
+                  ? 'Sơ đồ ${_currentIndex + 1} / $total'
+                  : 'Sơ đồ vector (Chỉ đọc)',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+        actions: [
+          IconButton(
+            key: const Key('reset_diagram_zoom_button'),
+            tooltip: 'Vừa màn hình',
+            icon: const Icon(Icons.fit_screen),
+            onPressed: _resetZoom,
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          // Banner định danh rõ ràng sơ đồ vector
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            child: Row(
+              children: [
+                const Icon(Icons.architecture, size: 18.0),
+                const SizedBox(width: 8.0),
+                Expanded(
+                  child: Text(
+                    'Sơ đồ vector chuẩn 1:2 (Chỉ đọc · Phóng to / di chuyển bằng 2 ngón)',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w500,
+                        ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Vùng hiển thị sơ đồ có InteractiveViewer
+          Expanded(
+            child: InteractiveViewer(
+              key: const Key('diagram_interactive_viewer'),
+              transformationController: _transCtrl,
+              minScale: 0.5,
+              maxScale: 5.0,
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: BilliardTableReadOnlyView(
+                    scene: diag.scene,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          // Thanh chuyển sơ đồ & chú thích (nếu có nhiều sơ đồ)
+          Container(
+            padding: const EdgeInsets.all(12.0),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerLow,
+              border: Border(
+                top: BorderSide(
+                  color: Theme.of(context).dividerColor.withValues(alpha: 0.2),
+                ),
+              ),
+            ),
+            child: SafeArea(
+              top: false,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (diag.caption.isNotEmpty) ...[
+                    Text(
+                      diag.caption,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8.0),
+                  ],
+                  if (total > 1)
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        IconButton.filledTonal(
+                          key: const Key('prev_diagram_button'),
+                          tooltip: 'Sơ đồ trước',
+                          onPressed: _currentIndex > 0 ? _prevDiagram : null,
+                          icon: const Icon(Icons.chevron_left),
+                        ),
+                        Text(
+                          'Sơ đồ ${_currentIndex + 1} / $total',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        IconButton.filledTonal(
+                          key: const Key('next_diagram_button'),
+                          tooltip: 'Sơ đồ kế tiếp',
+                          onPressed:
+                              _currentIndex < total - 1 ? _nextDiagram : null,
+                          icon: const Icon(Icons.chevron_right),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Màn hình xem ảnh lớn, phóng to và di chuyển để đọc trang sách / thế bi.
-class ImageViewerScreen extends StatelessWidget {
+class ImageViewerScreen extends StatefulWidget {
   final File file;
   final String title;
   final String caption;
@@ -413,31 +638,78 @@ class ImageViewerScreen extends StatelessWidget {
   });
 
   @override
+  State<ImageViewerScreen> createState() => _ImageViewerScreenState();
+}
+
+class _ImageViewerScreenState extends State<ImageViewerScreen> {
+  final TransformationController _transCtrl = TransformationController();
+
+  @override
+  void dispose() {
+    _transCtrl.dispose();
+    super.dispose();
+  }
+
+  void _resetZoom() {
+    _transCtrl.value = Matrix4.identity();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(title)),
+      appBar: AppBar(
+        title: Text(widget.title),
+        actions: [
+          IconButton(
+            key: const Key('reset_image_zoom_button'),
+            tooltip: 'Vừa màn hình',
+            icon: const Icon(Icons.fit_screen),
+            onPressed: _resetZoom,
+          ),
+        ],
+      ),
       body: Column(
         children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            child: Row(
+              children: [
+                const Icon(Icons.image, size: 18.0),
+                const SizedBox(width: 8.0),
+                Expanded(
+                  child: Text(
+                    'Ảnh nguồn đính kèm (Ảnh chụp sách/tài liệu · Phóng to / di chuyển bằng 2 ngón)',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w500,
+                        ),
+                  ),
+                ),
+              ],
+            ),
+          ),
           Expanded(
             child: InteractiveViewer(
               key: const Key('image_interactive_viewer'),
+              transformationController: _transCtrl,
               minScale: 0.5,
               maxScale: 5.0,
               child: Center(
                 child: Image.file(
-                  file,
+                  widget.file,
                   fit: BoxFit.contain,
                   errorBuilder: (_, _, _) => const Text('Không thể hiển thị ảnh.'),
                 ),
               ),
             ),
           ),
-          if (caption.isNotEmpty)
+          if (widget.caption.isNotEmpty)
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(12.0),
               color: Theme.of(context).colorScheme.surfaceContainerLow,
-              child: Text(caption),
+              child: Text(widget.caption),
             ),
         ],
       ),

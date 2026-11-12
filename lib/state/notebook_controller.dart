@@ -23,22 +23,36 @@ class CollectionActionOutcome {
   bool get isSuccess => collection != null && error == null;
 }
 
+enum ArticleViewMode {
+  list,
+  grid;
+
+  String get label => switch (this) {
+        ArticleViewMode.list => 'Danh sách',
+        ArticleViewMode.grid => 'Lưới',
+      };
+}
+
 class TabViewState {
   final ArticleFilterCriteria criteria;
   final double scrollOffset;
+  final ArticleViewMode viewMode;
 
   const TabViewState({
     this.criteria = const ArticleFilterCriteria(),
     this.scrollOffset = 0.0,
+    this.viewMode = ArticleViewMode.list,
   });
 
   TabViewState copyWith({
     ArticleFilterCriteria? criteria,
     double? scrollOffset,
+    ArticleViewMode? viewMode,
   }) {
     return TabViewState(
       criteria: criteria ?? this.criteria,
       scrollOffset: scrollOffset ?? this.scrollOffset,
+      viewMode: viewMode ?? this.viewMode,
     );
   }
 }
@@ -91,6 +105,23 @@ class NotebookController extends ChangeNotifier {
   Set<String> get selectedCollectionIds => currentCriteria.collectionIds;
   ArticleSortOption get sortBy => currentCriteria.sortBy;
   double get currentScrollOffset => currentTabState.scrollOffset;
+  ArticleViewMode get currentViewMode => currentTabState.viewMode;
+  bool get isGridView => currentViewMode == ArticleViewMode.grid;
+
+  void setViewMode(ArticleKind kind, ArticleViewMode mode) {
+    final current = _tabStates[kind]!;
+    if (current.viewMode == mode) return;
+    _tabStates[kind] = current.copyWith(viewMode: mode);
+    _safeNotify();
+  }
+
+  void toggleViewMode([ArticleKind? kind]) {
+    final targetKind = kind ?? _currentTab;
+    final nextMode = _tabStates[targetKind]!.viewMode == ArticleViewMode.list
+        ? ArticleViewMode.grid
+        : ArticleViewMode.list;
+    setViewMode(targetKind, nextMode);
+  }
 
   String? get selectedGroupId =>
       selectedGroupIds.length == 1 ? selectedGroupIds.first : null;

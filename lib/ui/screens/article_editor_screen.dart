@@ -61,6 +61,25 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
   bool _isImportingImages = false;
   bool _isDisposed = false;
 
+  final ScrollController _scrollController = ScrollController();
+
+  void _scrollToIndex(int targetIndex) {
+    if (!_scrollController.hasClients) return;
+    double targetOffset = 0.0;
+    if (targetIndex == 1) {
+      targetOffset = 380.0;
+    } else if (targetIndex == 3) {
+      targetOffset = 850.0;
+    } else if (targetIndex == 4) {
+      targetOffset = 1350.0;
+    }
+    _scrollController.animateTo(
+      targetOffset.clamp(0.0, _scrollController.position.maxScrollExtent),
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOut,
+    );
+  }
+
   /// Cache thumbnail LRU với giới hạn dung lượng/số mục rõ ràng.
   /// Đọc bất đồng bộ và đóng file handle ngay lập tức (không giữ khóa tệp trên Windows).
   /// Giải phóng khi bỏ ảnh hoặc khi đóng editor.
@@ -192,6 +211,7 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
   @override
   void dispose() {
     _thumbnailCache.clear();
+    _scrollController.dispose();
     for (final c in _fixedTextControllers) {
       c.removeListener(_onFormFieldChanged);
       c.dispose();
@@ -830,6 +850,55 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
                     ? 'Bài viết mới'
                     : 'Sửa ${widget.existingArticle!.code}',
               ),
+              bottom: PreferredSize(
+                preferredSize: const Size.fromHeight(48.0),
+                child: Container(
+                  width: double.infinity,
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12.0,
+                    vertical: 6.0,
+                  ),
+                  child: SingleChildScrollView(
+                    key: const Key('editor_section_nav_bar'),
+                    primary: false,
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        ActionChip(
+                          key: const Key('editor_section_tab_info'),
+                          avatar: const Icon(Icons.info_outline, size: 16.0),
+                          label: const Text('1. Thông tin'),
+                          backgroundColor:
+                              Theme.of(context).colorScheme.secondaryContainer,
+                          onPressed: () => _scrollToIndex(0),
+                        ),
+                        const SizedBox(width: 8.0),
+                        ActionChip(
+                          key: const Key('editor_section_tab_content'),
+                          avatar: const Icon(Icons.subject, size: 16.0),
+                          label: const Text('2. Nội dung'),
+                          onPressed: () => _scrollToIndex(1),
+                        ),
+                        const SizedBox(width: 8.0),
+                        ActionChip(
+                          key: const Key('editor_section_tab_diagrams'),
+                          avatar: const Icon(Icons.architecture, size: 16.0),
+                          label: Text('3. Sơ đồ (${_diagrams.length})'),
+                          onPressed: () => _scrollToIndex(3),
+                        ),
+                        const SizedBox(width: 8.0),
+                        ActionChip(
+                          key: const Key('editor_section_tab_media'),
+                          avatar: const Icon(Icons.image_outlined, size: 16.0),
+                          label: Text('4. Ảnh & Nguồn (${_images.length})'),
+                          onPressed: () => _scrollToIndex(4),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
               actions: [
                 IconButton(
                   key: const Key('preview_article_button'),
@@ -852,6 +921,7 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
               ],
             ),
             body: ListView.builder(
+              controller: _scrollController,
               padding: const EdgeInsets.all(16.0),
               itemCount: 7 + _images.length,
               itemBuilder: (context, index) {

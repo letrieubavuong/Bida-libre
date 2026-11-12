@@ -329,6 +329,18 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
             onPressed: _openGroupManager,
           ),
           IconButton(
+            key: const Key('toggle_view_mode_button'),
+            tooltip: _controller.isGridView
+                ? 'Chuyển sang dạng Danh sách'
+                : 'Chuyển sang dạng Lưới',
+            icon: Icon(
+              _controller.isGridView
+                  ? Icons.view_list_outlined
+                  : Icons.grid_view_outlined,
+            ),
+            onPressed: _controller.toggleViewMode,
+          ),
+          IconButton(
             tooltip: 'Yêu thích',
             icon: Icon(
               _controller.favoritesOnly ? Icons.star : Icons.star_border,
@@ -472,76 +484,9 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
           Expanded(
             child: articles.isEmpty
                 ? _buildEmptyState(context)
-                : ListView.builder(
-                    key: Key('articles_list_${currentKind.storageKey}'),
-                    controller: _scrollCtrl,
-                    padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 96.0),
-                    itemCount: articles.length,
-                    itemBuilder: (context, index) {
-                      final article = articles[index];
-                      final groupName = _controller.groupNameFor(
-                        article.kind,
-                        article.primaryGroupId,
-                      );
-                      final metaParts = <String>[
-                        article.code,
-                        groupName,
-                        article.difficulty.label,
-                        '${article.diagrams.length} sơ đồ',
-                        if (article.isDraft) 'Nháp',
-                      ];
-                      return Card(
-                        key: Key('article_card_${article.id}'),
-                        margin: const EdgeInsets.only(bottom: 12.0),
-                        child: ListTile(
-                          onTap: () => _openArticleDetail(article),
-                          leading: ArticleThumbnail(
-                            article: article,
-                            assetStore: _controller.assetStore,
-                          ),
-                          title: Text(
-                            article.title,
-                            style: const TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                          subtitle: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(metaParts.join(' • ')),
-                              if (article.summary.isNotEmpty)
-                                Text(
-                                  article.summary,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              if (article.tags.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 4.0),
-                                  child: Text(
-                                    article.tags.map((t) => '#$t').join(' '),
-                                    style: Theme.of(context).textTheme.bodySmall,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                            ],
-                          ),
-                          trailing: IconButton(
-                            tooltip: article.isFavorite
-                                ? 'Bỏ yêu thích'
-                                : 'Yêu thích',
-                            icon: Icon(
-                              article.isFavorite
-                                  ? Icons.star
-                                  : Icons.star_border,
-                              color: article.isFavorite ? Colors.amber : null,
-                            ),
-                            onPressed: () =>
-                                _controller.toggleFavorite(article.id),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+                : _controller.isGridView
+                    ? _buildGridView(context, currentKind, articles)
+                    : _buildListView(context, currentKind, articles),
           ),
         ],
       ),
@@ -591,6 +536,263 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildListView(
+    BuildContext context,
+    ArticleKind currentKind,
+    List<Article> articles,
+  ) {
+    return ListView.builder(
+      key: Key('articles_list_${currentKind.storageKey}'),
+      controller: _scrollCtrl,
+      padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 96.0),
+      itemCount: articles.length,
+      itemBuilder: (context, index) {
+        final article = articles[index];
+        final groupName = _controller.groupNameFor(
+          article.kind,
+          article.primaryGroupId,
+        );
+        final metaParts = <String>[
+          article.code,
+          groupName,
+          article.difficulty.label,
+          '${article.diagrams.length} sơ đồ',
+          if (article.isDraft) 'Nháp',
+        ];
+        return Card(
+          key: Key('article_card_${article.id}'),
+          margin: const EdgeInsets.only(bottom: 12.0),
+          child: ListTile(
+            onTap: () => _openArticleDetail(article),
+            leading: ArticleThumbnail(
+              article: article,
+              assetStore: _controller.assetStore,
+            ),
+            title: Text(
+              article.title,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(metaParts.join(' • ')),
+                if (article.summary.isNotEmpty)
+                  Text(
+                    article.summary,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                if (article.tags.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4.0),
+                    child: Text(
+                      article.tags.map((t) => '#$t').join(' '),
+                      style: Theme.of(context).textTheme.bodySmall,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            ),
+            trailing: IconButton(
+              tooltip: article.isFavorite ? 'Bỏ yêu thích' : 'Yêu thích',
+              icon: Icon(
+                article.isFavorite ? Icons.star : Icons.star_border,
+                color: article.isFavorite ? Colors.amber : null,
+              ),
+              onPressed: () => _controller.toggleFavorite(article.id),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildGridView(
+    BuildContext context,
+    ArticleKind currentKind,
+    List<Article> articles,
+  ) {
+    final isLandscape =
+        MediaQuery.orientationOf(context) == Orientation.landscape;
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final crossAxisCount =
+        screenWidth >= 900 ? 4 : (isLandscape || screenWidth >= 600 ? 3 : 2);
+
+    return GridView.builder(
+      key: Key('articles_grid_${currentKind.storageKey}'),
+      controller: _scrollCtrl,
+      padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 96.0),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: crossAxisCount,
+        childAspectRatio: 0.74,
+        crossAxisSpacing: 12.0,
+        mainAxisSpacing: 12.0,
+      ),
+      itemCount: articles.length,
+      itemBuilder: (context, index) {
+        final article = articles[index];
+        final groupName = _controller.groupNameFor(
+          article.kind,
+          article.primaryGroupId,
+        );
+        return Card(
+          key: Key('article_card_${article.id}'),
+          clipBehavior: Clip.antiAlias,
+          elevation: 2.0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12.0),
+          ),
+          child: InkWell(
+            onTap: () => _openArticleDetail(article),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  flex: 6,
+                  child: Container(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .surfaceContainerHighest,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        Center(
+                          child: ArticleThumbnail(
+                            article: article,
+                            assetStore: _controller.assetStore,
+                          ),
+                        ),
+                        Positioned(
+                          top: 4.0,
+                          right: 4.0,
+                          child: Material(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .surface
+                                .withValues(alpha: 0.85),
+                            shape: const CircleBorder(),
+                            child: IconButton(
+                              iconSize: 18.0,
+                              constraints: const BoxConstraints(
+                                minWidth: 36.0,
+                                minHeight: 36.0,
+                              ),
+                              padding: EdgeInsets.zero,
+                              tooltip: article.isFavorite
+                                  ? 'Bỏ yêu thích'
+                                  : 'Yêu thích',
+                              icon: Icon(
+                                article.isFavorite
+                                    ? Icons.star
+                                    : Icons.star_border,
+                                color: article.isFavorite
+                                    ? Colors.amber
+                                    : null,
+                              ),
+                              onPressed: () =>
+                                  _controller.toggleFavorite(article.id),
+                            ),
+                          ),
+                        ),
+                        if (article.isDraft)
+                          Positioned(
+                            top: 6.0,
+                            left: 6.0,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6.0,
+                                vertical: 2.0,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.black54,
+                                borderRadius: BorderRadius.circular(4.0),
+                              ),
+                              child: const Text(
+                                'Nháp',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10.0,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                Expanded(
+                  flex: 4,
+                  child: Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6.0,
+                                vertical: 2.0,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .primaryContainer,
+                                borderRadius: BorderRadius.circular(4.0),
+                              ),
+                              child: Text(
+                                article.code,
+                                style: TextStyle(
+                                  fontSize: 11.0,
+                                  fontWeight: FontWeight.bold,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onPrimaryContainer,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 4.0),
+                            Expanded(
+                              child: Text(
+                                groupName,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .outline,
+                                    ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Text(
+                          article.title,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13.0,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 

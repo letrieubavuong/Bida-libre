@@ -8,6 +8,10 @@ Tài liệu này quy định các nguyên tắc bắt buộc khi làm việc tro
 - **Không tự ý chuyển phase**: Làm từng phase một, nghiệm thu xong mới chuyển phase. Không làm gộp.
 - **Không tự chế nội dung**: Không tự bịa công thức bộ số hay hàng trăm bài giả vào thư viện chính thức.
 - **Không thay đổi cấu trúc tổng thể**: Giữ nguyên hệ tọa độ sơ đồ lòng bàn `188 x 376`, tỉ lệ 1:2, gốc dưới-trái, đơn vị sơ đồ.
+- **Điều chỉnh phạm vi Phase 6 (Theo quyết định chấp thuận Phase 4C)**:
+  - App là sổ tay hình bi để tra cứu và tập luyện: Kĩ thuật / Bộ số / Hình bi; đọc bài, xem ảnh và sơ đồ; tạo/sửa bài, đặt bi và vẽ đường hướng dẫn tĩnh; nhóm, thẻ, bộ sưu tập, tìm kiếm và yêu thích.
+  - Bỏ toàn bộ Phase 5: Không phát triển tiến độ, trạng thái hoặc nhật ký tập; Không phát triển chia sẻ, xuất PNG, sao lưu/khôi phục; Không mô phỏng vật lý hoặc chạy bi.
+  - Không tự xóa trường/database cũ chỉ để dọn mã; giữ nguyên nội dung và dữ liệu người dùng.
 
 ## 2. Quy chuẩn code & Kiến trúc
 
