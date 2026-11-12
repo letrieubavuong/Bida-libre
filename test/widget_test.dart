@@ -3,12 +3,29 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:libre_billiard_notebook/geometry/table_constants.dart';
 import 'package:libre_billiard_notebook/main.dart';
 import 'package:libre_billiard_notebook/models/models.dart';
+import 'package:libre_billiard_notebook/repositories/sqlite_notebook_repository.dart';
+import 'package:libre_billiard_notebook/state/notebook_controller.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
+  setUpAll(() {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfiNoIsolate;
+  });
+
+  Future<({NotebookController controller, SqliteNotebookRepository repo})>
+      createTestController(WidgetTester tester) async {
+    final repo = SqliteNotebookRepository(dbPath: inMemoryDatabasePath);
+    await tester.runAsync(() => repo.initialize());
+    final controller = NotebookController(repository: repo);
+    return (controller: controller, repo: repo);
+  }
+
   group('NAV-01: Khung điều hướng ba mục & không mô phỏng vật lý', () {
     testWidgets('Hiển thị đúng 3 tab Kĩ thuật, Bộ số, Hình bi và không có Play/mô phỏng',
         (WidgetTester tester) async {
-      await tester.pumpWidget(const LibreBilliardApp());
+      final setup = await createTestController(tester);
+      await tester.pumpWidget(LibreBilliardApp(controller: setup.controller));
 
       final navBar = find.byType(NavigationBar);
       expect(navBar, findsOneWidget);
@@ -44,11 +61,15 @@ void main() {
       expect(find.text('LibreBilliard — Hình bi'), findsOneWidget);
       expect(find.text('Gom góc'), findsOneWidget);
       expect(find.text('Gom dọc băng dài'), findsOneWidget);
+
+      setup.controller.dispose();
+      await tester.runAsync(() => setup.repo.close());
     });
 
     testWidgets('Không hiển thị thanh tìm kiếm; hỗ trợ lọc Yêu thích và xóa lọc ở trạng thái rỗng',
         (WidgetTester tester) async {
-      await tester.pumpWidget(const LibreBilliardApp());
+      final setup = await createTestController(tester);
+      await tester.pumpWidget(LibreBilliardApp(controller: setup.controller));
 
       expect(find.byType(TextField), findsNothing);
       expect(find.text('Chưa có bài nào trong mục Kĩ thuật'), findsOneWidget);
@@ -61,6 +82,9 @@ void main() {
       await tester.tap(find.text('Bỏ lọc'));
       await tester.pumpAndSettle();
       expect(find.text('Chưa có bài nào trong mục Kĩ thuật'), findsOneWidget);
+
+      setup.controller.dispose();
+      await tester.runAsync(() => setup.repo.close());
     });
   });
 

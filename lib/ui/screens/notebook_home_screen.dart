@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../../models/models.dart';
 import '../../repositories/scene_storage.dart';
 import '../../state/notebook_controller.dart';
+import 'article_detail_screen.dart';
+import 'article_editor_screen.dart';
 import 'table_stage_screen.dart';
 
 class NotebookHomeScreen extends StatefulWidget {
@@ -64,6 +66,28 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => TableStageScreen(storage: widget.sceneStorage),
+      ),
+    );
+  }
+
+  Future<void> _openCreateArticle() async {
+    await Navigator.of(context).push<Article>(
+      MaterialPageRoute(
+        builder: (_) => ArticleEditorScreen(
+          controller: _controller,
+          initialKind: _controller.currentTab,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openArticleDetail(Article article) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => ArticleDetailScreen(
+          controller: _controller,
+          articleId: article.id,
+        ),
       ),
     );
   }
@@ -151,36 +175,101 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
           ),
         ),
       ),
-      body: articles.isEmpty
-          ? _buildEmptyState(context)
-          : ListView.builder(
-              padding: const EdgeInsets.all(16.0),
-              itemCount: articles.length,
-              itemBuilder: (context, index) {
-                final article = articles[index];
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 12.0),
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      child: Text(article.kind.codePrefix),
-                    ),
-                    title: Text(article.title),
-                    subtitle: Text('${article.code} • ${article.summary}'),
-                    trailing: article.isFavorite
-                        ? const Icon(Icons.star, color: Colors.amber, size: 20.0)
-                        : null,
-                  ),
-                );
-              },
+      body: Column(
+        children: [
+          if (_controller.isLoading)
+            const LinearProgressIndicator(minHeight: 2.0),
+          if (_controller.loadError != null)
+            MaterialBanner(
+              content: Text(_controller.loadError!),
+              actions: [
+                TextButton(
+                  onPressed: _controller.initialize,
+                  child: const Text('Thử lại'),
+                ),
+              ],
             ),
-      floatingActionButton: currentKind == ArticleKind.position
-          ? FloatingActionButton.extended(
+          Expanded(
+            child: articles.isEmpty
+                ? _buildEmptyState(context)
+                : ListView.builder(
+                    padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 96.0),
+                    itemCount: articles.length,
+                    itemBuilder: (context, index) {
+                      final article = articles[index];
+                      final metaParts = <String>[
+                        article.code,
+                        article.difficulty.label,
+                        '${article.diagrams.length} sơ đồ',
+                        if (article.isDraft) 'Nháp',
+                      ];
+                      return Card(
+                        key: Key('article_card_${article.id}'),
+                        margin: const EdgeInsets.only(bottom: 12.0),
+                        child: ListTile(
+                          onTap: () => _openArticleDetail(article),
+                          leading: CircleAvatar(
+                            child: Text(article.kind.codePrefix),
+                          ),
+                          title: Text(
+                            article.title,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(metaParts.join(' • ')),
+                              if (article.summary.isNotEmpty)
+                                Text(
+                                  article.summary,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                            ],
+                          ),
+                          trailing: IconButton(
+                            tooltip: article.isFavorite
+                                ? 'Bỏ yêu thích'
+                                : 'Yêu thích',
+                            icon: Icon(
+                              article.isFavorite
+                                  ? Icons.star
+                                  : Icons.star_border,
+                              color: article.isFavorite ? Colors.amber : null,
+                            ),
+                            onPressed: () =>
+                                _controller.toggleFavorite(article.id),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (currentKind == ArticleKind.position) ...[
+            FloatingActionButton.small(
+              heroTag: 'fab_table_stage_hero',
               key: const Key('fab_open_table_stage'),
+              tooltip: 'Dựng thế bi',
               onPressed: _openTableStage,
-              icon: const Icon(Icons.edit_location_alt_outlined),
-              label: const Text('Dựng thế bi'),
-            )
-          : null,
+              child: const Icon(Icons.grid_on),
+            ),
+            const SizedBox(height: 10.0),
+          ],
+          FloatingActionButton.extended(
+            heroTag: 'fab_new_article_hero',
+            key: const Key('fab_new_article'),
+            onPressed: _openCreateArticle,
+            icon: const Icon(Icons.add),
+            label: const Text('Tạo bài'),
+          ),
+        ],
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tabIndex(currentKind),
         onDestinationSelected: (index) {
@@ -238,8 +327,8 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
               hasFilters
                   ? 'Hãy xóa bộ lọc để xem lại danh sách.'
                   : isPositionTab
-                      ? 'Bạn có thể mở bàn dựng để đặt thử vị trí ba bi ngay lúc này.'
-                      : 'Tính năng soạn bài viết đang được hoàn thiện ở bản cập nhật tới.',
+                      ? 'Bạn có thể tạo bài hình bi mới hoặc mở bàn dựng nhanh ba bi.'
+                      : 'Nhấn "Tạo bài" để soạn và lưu ngoại tuyến vào sổ tay.',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(context).colorScheme.outline,
                   ),
@@ -252,13 +341,23 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
                 icon: const Icon(Icons.filter_alt_off),
                 label: const Text('Bỏ lọc'),
               )
-            else if (isPositionTab)
+            else ...[
               FilledButton.icon(
-                key: const Key('empty_open_table_stage'),
-                onPressed: _openTableStage,
-                icon: const Icon(Icons.grid_on),
-                label: const Text('Dựng thế bi'),
+                key: const Key('empty_create_article'),
+                onPressed: _openCreateArticle,
+                icon: const Icon(Icons.add),
+                label: Text('Tạo bài ${currentKind.label}'),
               ),
+              if (isPositionTab) ...[
+                const SizedBox(height: 8.0),
+                OutlinedButton.icon(
+                  key: const Key('empty_open_table_stage'),
+                  onPressed: _openTableStage,
+                  icon: const Icon(Icons.grid_on),
+                  label: const Text('Dựng thế bi'),
+                ),
+              ],
+            ],
           ],
         ),
       ),

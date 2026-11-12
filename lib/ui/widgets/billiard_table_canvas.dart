@@ -453,6 +453,59 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
   }
 }
 
+/// Khung hiển thị sơ đồ bàn chỉ đọc dành cho màn hình xem chi tiết bài viết hoặc thẻ xem trước:
+/// không gắn tay nắm điều khiển và không nhận kéo/chạm làm thay đổi vị trí bi hoặc đường.
+class BilliardTableReadOnlyView extends StatelessWidget {
+  final DiagramScene scene;
+  final double paddingPx;
+
+  const BilliardTableReadOnlyView({
+    super.key,
+    required this.scene,
+    this.paddingPx = 4.0,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: AspectRatio(
+        aspectRatio: TableCoordinateMapper.totalDiagramWidth /
+            TableCoordinateMapper.totalDiagramHeight,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final size = Size(
+              constraints.maxWidth.isFinite ? constraints.maxWidth : 228.0,
+              constraints.maxHeight.isFinite ? constraints.maxHeight : 416.0,
+            );
+            final mapper = TableCoordinateMapper(
+              canvasSize: size,
+              paddingPx: paddingPx,
+            );
+            return CustomPaint(
+              size: size,
+              painter: _BilliardTablePainter(
+                scene: scene,
+                mapper: mapper,
+                toolMode: EditorToolMode.select,
+                selectedBallId: null,
+                selectedPathId: null,
+                selectedVertexIndex: null,
+                selectedSegmentIndex: null,
+                selectedControlHandle: null,
+                selectedAnnotationId: null,
+                invalidPathIds: const {},
+                draftPoints: const [],
+                draftOwnerBallId: 'ball_white',
+                liveDrawCursor: null,
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
 class _BilliardTablePainter extends CustomPainter {
   final DiagramScene scene;
   final TableCoordinateMapper mapper;

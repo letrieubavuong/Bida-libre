@@ -5,10 +5,18 @@ import 'package:libre_billiard_notebook/geometry/table_geometry.dart';
 import 'package:libre_billiard_notebook/main.dart';
 import 'package:libre_billiard_notebook/models/models.dart';
 import 'package:libre_billiard_notebook/repositories/scene_storage.dart';
+import 'package:libre_billiard_notebook/repositories/sqlite_notebook_repository.dart';
+import 'package:libre_billiard_notebook/state/notebook_controller.dart';
 import 'package:libre_billiard_notebook/state/table_editor_controller.dart';
 import 'package:libre_billiard_notebook/ui/screens/table_stage_screen.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
+  setUpAll(() {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfiNoIsolate;
+  });
+
   group('A.2 & A.3: Tính bất biến và kiểm tra toàn vẹn DiagramScene', () {
     test('F.8: Danh sách trong DiagramScene bất biến và bản cũ không bị sửa theo thao tác sau',
         () {
@@ -335,8 +343,14 @@ void main() {
   group('B, E & F: Widget tests cho Dựng thế bi, xoay màn hình, bàn phím & Pan Cancel', () {
     testWidgets('Mở Dựng thế bi từ tab Hình bi, không hiển thị thuật ngữ Phase hay Đã lưu',
         (WidgetTester tester) async {
+      final repo = SqliteNotebookRepository(dbPath: inMemoryDatabasePath);
+      await tester.runAsync(() => repo.initialize());
+      final controller = NotebookController(repository: repo);
       await tester.pumpWidget(
-        LibreBilliardApp(sceneStorage: MemorySceneStorage()),
+        LibreBilliardApp(
+          controller: controller,
+          sceneStorage: MemorySceneStorage(),
+        ),
       );
 
       // Chuyển sang tab Hình bi
@@ -353,6 +367,10 @@ void main() {
       expect(find.byType(TableStageScreen), findsOneWidget);
       expect(find.textContaining('Đã lưu'), findsNothing);
       expect(find.textContaining('Phase'), findsNothing);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+      await tester.runAsync(() => repo.close());
     });
 
     testWidgets('F.5 & F.10: Chạm kéo trên canvas thật & Pan cancel không để kẹt trạng thái',

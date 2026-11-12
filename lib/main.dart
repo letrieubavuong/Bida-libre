@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'repositories/notebook_repository.dart';
 import 'repositories/scene_storage.dart';
 import 'state/notebook_controller.dart';
 import 'ui/screens/notebook_home_screen.dart';
@@ -9,12 +10,16 @@ void main() {
 
 class LibreBilliardApp extends StatefulWidget {
   final NotebookController? controller;
+  final NotebookRepository? repository;
   final SceneStorage? sceneStorage;
+  final bool autoInitializeRepository;
 
   const LibreBilliardApp({
     super.key,
     this.controller,
+    this.repository,
     this.sceneStorage,
+    this.autoInitializeRepository = true,
   });
 
   @override
@@ -29,7 +34,11 @@ class _LibreBilliardAppState extends State<LibreBilliardApp> {
   void initState() {
     super.initState();
     _ownsController = widget.controller == null;
-    _controller = widget.controller ?? NotebookController();
+    _controller = widget.controller ??
+        NotebookController(repository: widget.repository);
+    if (_ownsController && widget.autoInitializeRepository) {
+      _controller.initialize();
+    }
   }
 
   @override

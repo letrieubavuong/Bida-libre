@@ -1,24 +1,28 @@
 import 'package:flutter/material.dart';
 
+import '../../geometry/scene_validator.dart';
 import '../../geometry/table_constants.dart';
 import '../../models/models.dart';
 import '../../repositories/scene_storage.dart';
 import '../../state/table_editor_controller.dart';
 import '../widgets/billiard_table_canvas.dart';
 
-/// Màn hình Dựng thế bi toàn vùng (Phase 1 + Phase 2):
+/// Màn hình Dựng thế bi toàn vùng (Phase 1–3 + tích hợp biên tập sơ đồ bài viết Phase 4A):
 /// - Canvas bàn bi phủ toàn vùng editor trong Stack, giữ đúng tỉ lệ 1:2 khi đóng/mở công cụ nổi hay bàn phím.
 /// - Thanh công cụ nổi gọn (kéo bằng tay nắm riêng, thu gọn/mở rộng, giữ trong vùng an toàn khi xoay).
-/// - Thuộc tính nổi gọn theo đối tượng (bi, đường, hoặc trạng thái đang vẽ); tùy chọn phụ mở qua sheet.
-/// - Lưu/tải bất đồng bộ an toàn với snapshot chụp trước khi await.
+/// - Khi [returnSceneOnSave] = true, lưu sẽ trả về `DiagramScene` cho bài viết đang soạn mà không đụng `primary_scene.json`.
 class TableStageScreen extends StatefulWidget {
   final TableEditorController? controller;
   final SceneStorage? storage;
+  final DiagramScene? initialScene;
+  final bool returnSceneOnSave;
 
   const TableStageScreen({
     super.key,
     this.controller,
     this.storage,
+    this.initialScene,
+    this.returnSceneOnSave = false,
   });
 
   @override
@@ -54,13 +58,21 @@ class _TableStageScreenState extends State<TableStageScreen> {
   void initState() {
     super.initState();
     _ownsController = widget.controller == null;
-    _controller = widget.controller ??
-        TableEditorController(
-          storage: widget.storage ?? FileSceneStorage(),
-        );
+    if (widget.controller != null) {
+      _controller = widget.controller!;
+    } else if (widget.returnSceneOnSave || widget.initialScene != null) {
+      _controller = TableEditorController(
+        initialScene: widget.initialScene,
+        storage: null,
+      );
+    } else {
+      _controller = TableEditorController(
+        storage: widget.storage ?? FileSceneStorage(),
+      );
+    }
     _controller.addListener(_onControllerChanged);
     _syncCoordinateFields(force: true);
-    if (_ownsController) {
+    if (_ownsController && !widget.returnSceneOnSave && widget.initialScene == null) {
       _controller.loadFromStorage(force: true);
     }
   }
@@ -152,6 +164,34 @@ class _TableStageScreenState extends State<TableStageScreen> {
   }
 
   Future<void> _saveScene() async {
+    if (widget.returnSceneOnSave) {
+      if (_controller.isDraggingAny || _controller.isDrawingWithDraft) {
+        _showSnack('Hãy hoàn tất thao tác hiện tại trước khi áp dụng sơ đồ.');
+        return;
+      }
+      final err = SceneValidator.validateCompleteForSave(_controller.scene);
+      if (err != null) {
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Sơ đồ chưa hợp lệ'),
+            content: Text(err),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Đóng'),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+      if (mounted) {
+        Navigator.of(context).pop<DiagramScene>(_controller.scene);
+      }
+      return;
+    }
+
     final outcome = await _controller.saveToStorage();
     if (!mounted) return;
     if (outcome.isSuccess) {
@@ -1262,7 +1302,9 @@ class _TableStageScreenState extends State<TableStageScreen> {
                 ),
                 IconButton(
                   key: const Key('save_scene_button'),
-                  tooltip: 'Lưu sơ đồ',
+                  tooltip: widget.returnSceneOnSave
+                      ? 'Hoàn tất sơ đồ'
+                      : 'Lưu sơ đồ',
                   constraints: btnConstraints,
                   padding: EdgeInsets.zero,
                   icon: _controller.isSaving
@@ -1274,7 +1316,11 @@ class _TableStageScreenState extends State<TableStageScreen> {
                       : Badge(
                           isLabelVisible: _controller.hasUnsavedChanges,
                           smallSize: 7.0,
-                          child: const Icon(Icons.save_outlined),
+                          child: Icon(
+                            widget.returnSceneOnSave
+                                ? Icons.check_circle_outline
+                                : Icons.save_outlined,
+                          ),
                         ),
                   onPressed: busySave ? null : _saveScene,
                 ),
@@ -1293,22 +1339,23 @@ class _TableStageScreenState extends State<TableStageScreen> {
                       _reloadScene();
                     }
                   },
-                  itemBuilder: (context) => const [
-                    PopupMenuItem(
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(
                       key: Key('menu_display_settings'),
                       value: 'display',
                       child: Text('Hiển thị & Bắt dính'),
                     ),
-                    PopupMenuItem(
+                    const PopupMenuItem(
                       key: Key('menu_reset_balls'),
                       value: 'reset',
                       child: Text('Đặt lại vị trí bi'),
                     ),
-                    PopupMenuItem(
-                      key: Key('menu_reload_scene'),
-                      value: 'reload',
-                      child: Text('Tải lại từ máy'),
-                    ),
+                    if (!widget.returnSceneOnSave)
+                      const PopupMenuItem(
+                        key: Key('menu_reload_scene'),
+                        value: 'reload',
+                        child: Text('Tải lại từ máy'),
+                      ),
                   ],
                 ),
               ],
