@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:libre_billiard_notebook/geometry/annotation_geometry.dart';
 import 'package:libre_billiard_notebook/geometry/path_geometry.dart';
 import 'package:libre_billiard_notebook/geometry/table_geometry.dart';
 import 'package:libre_billiard_notebook/models/models.dart';
@@ -383,15 +384,36 @@ void main() {
       final initialBalls = writer.balls;
       final initialPaths = writer.paths;
 
-      // Thêm đủ 5 loại chú thích (không nhét kích thước vào text)
+      // Nhãn chữ & Số thứ tự bị từ chối nếu đặt vào mặt nỉ (94, 188)
+      String? rejectMsg;
+      expect(
+        writer.addAnnotation(
+          type: AnnotationType.label,
+          position: const DiagramPoint(94, 188),
+          text: 'Sai vùng',
+          onRejected: (m) => rejectMsg = m,
+        ),
+        isNull,
+      );
+      expect(rejectMsg, contains('băng gỗ'));
+      expect(
+        writer.addAnnotation(
+          type: AnnotationType.sequence,
+          position: const DiagramPoint(94, 188),
+          text: '1',
+        ),
+        isNull,
+      );
+
+      // Đặt đủ 5 loại chú thích hợp lệ (nhãn và số thứ tự nằm trên dải băng gỗ)
       final annLabel = writer.addAnnotation(
         type: AnnotationType.label,
-        position: const DiagramPoint(50, 60),
+        position: const DiagramPoint(-12.5, 60),
         text: 'Điểm đánh',
       )!;
       final annSeq = writer.addAnnotation(
         type: AnnotationType.sequence,
-        position: const DiagramPoint(80, 90),
+        position: const DiagramPoint(200.5, 120),
         text: '1',
       )!;
       final annMarker = writer.addAnnotation(
@@ -672,6 +694,57 @@ void main() {
       await tester.pumpAndSettle();
       expect(controller.annotations.length, 1);
       expect(controller.annotations.first.width, 52.5);
+    });
+
+    testWidgets('Nhãn chữ và Số thứ tự chỉ đặt/kéo trên dải băng gỗ xung quanh bàn, không vào mặt nỉ',
+        (WidgetTester tester) async {
+      final controller = TableEditorController();
+
+      await tester.pumpWidget(
+        MaterialApp(home: TableStageScreen(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('mode_annotation_chip')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('place_ann_label')));
+      await tester.pumpAndSettle();
+
+      final canvasFinder = find.byKey(const Key('billiard_table_canvas'));
+      final topLeft = tester.getTopLeft(canvasFinder);
+      final mapper = TableCoordinateMapper(canvasSize: tester.getSize(canvasFinder));
+
+      // 1. Chạm vào giữa mặt nỉ (94, 188) -> bị từ chối và hiện thông báo, chưa thêm chú thích
+      await tester.tapAt(topLeft + mapper.diagramToScreen(const DiagramPoint(94, 188)));
+      await tester.pumpAndSettle();
+      expect(controller.annotations, isEmpty);
+      expect(find.textContaining('băng gỗ'), findsAtLeastNWidgets(1));
+
+      // 2. Chạm vào phần dải băng gỗ bên trái (-12.5, 188) -> đặt thành công
+      await tester.tapAt(topLeft + mapper.diagramToScreen(const DiagramPoint(-12.5, 188)));
+      await tester.pumpAndSettle();
+      expect(controller.annotations.length, 1);
+      final labelAnn = controller.annotations.first;
+      expect(AnnotationGeometry.isOnWoodRailBand(labelAnn.position), isTrue);
+
+      // 3. Thử kéo nhãn vào giữa mặt nỉ -> phải bị kẹp trên dải băng gỗ
+      final dragToken = controller.beginAnnotationDrag(labelAnn.id);
+      expect(dragToken, isNotNull);
+      controller.updateAnnotationDrag(const DiagramPoint(94, 188), dragToken: dragToken);
+      controller.endAnnotationDrag(dragToken: dragToken);
+      final afterDrag = controller.annotations.first;
+      expect(AnnotationGeometry.isOnWoodRailBand(afterDrag.position), isTrue);
+
+      // 4. Schema validation cũng từ chối nếu JSON cố tình đặt label vào giữa mặt nỉ
+      final invalidJson = controller.scene.withAnnotations([
+        DiagramAnnotation(
+          id: 'bad_label',
+          type: AnnotationType.label,
+          position: const DiagramPoint(94, 188),
+          text: 'Lạc vào nỉ',
+        ),
+      ]).toJson();
+      expect(() => DiagramScene.fromJson(invalidJson), throwsFormatException);
     });
   });
 }

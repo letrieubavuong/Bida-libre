@@ -1176,11 +1176,24 @@ class TableEditorController extends ChangeNotifier {
     int? colorValue,
     bool isDashed = false,
     double strokeWidth = 1.8,
+    void Function(String message)? onRejected,
   }) {
     if (isEditingLocked || isDrawingWithDraft || !position.isFinite) {
       return null;
     }
     if (strokeWidth.isFinite == false || strokeWidth <= 0) return null;
+
+    if (AnnotationGeometry.isRailOnlyType(type) &&
+        !AnnotationGeometry.isOnWoodRailBand(
+          position,
+          width: _scene.width,
+          height: _scene.height,
+        )) {
+      onRejected?.call(
+        'Nhãn chữ và Số thứ tự chỉ đặt trên phần dải băng gỗ xung quanh lòng bàn.',
+      );
+      return null;
+    }
 
     final safeWidth = width ?? DiagramAnnotation.defaultWidthFor(type);
     final safeHeight = height ?? DiagramAnnotation.defaultHeightFor(type);
@@ -1203,6 +1216,7 @@ class TableEditorController extends ChangeNotifier {
 
     final clampedPos = AnnotationGeometry.clampPosition(
       position,
+      type: type,
       width: _scene.width,
       height: _scene.height,
     );
@@ -1287,6 +1301,7 @@ class TableEditorController extends ChangeNotifier {
 
     final clamped = AnnotationGeometry.clampPosition(
       desiredPos,
+      type: ann.type,
       width: _scene.width,
       height: _scene.height,
     );

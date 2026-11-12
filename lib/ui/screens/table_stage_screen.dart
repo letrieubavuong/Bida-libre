@@ -1012,6 +1012,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
                             _controller.addAnnotation(
                               type: _controller.draftAnnotationType,
                               position: pt,
+                              onRejected: _showSnack,
                             );
                           },
                           onDrawPointPlaced: _controller.addDraftPoint,
@@ -1626,7 +1627,10 @@ class _TableStageScreenState extends State<TableStageScreen> {
               const SizedBox(width: 4.0),
             ],
             Text(
-              'Chạm bàn để đặt',
+              (_controller.draftAnnotationType == AnnotationType.label ||
+                      _controller.draftAnnotationType == AnnotationType.sequence)
+                  ? 'Chạm dải băng gỗ để đặt'
+                  : 'Chạm bàn để đặt',
               style: Theme.of(context).textTheme.labelSmall,
             ),
             const SizedBox(width: 4.0),

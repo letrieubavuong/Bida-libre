@@ -1081,6 +1081,24 @@ class DiagramScene {
       if (!ann.position.isFinite) {
         return 'Tọa độ chú thích ${ann.id} không hữu hạn.';
       }
+      if (ann.type == AnnotationType.label ||
+          ann.type == AnnotationType.sequence) {
+        final frameMaxX = width + 20.0;
+        final frameMaxY = height + 20.0;
+        final railMaxX = width + 5.0;
+        final railMaxY = height + 5.0;
+        final inFrame = ann.position.x >= -20.0 - _validationEpsilon &&
+            ann.position.x <= frameMaxX + _validationEpsilon &&
+            ann.position.y >= -20.0 - _validationEpsilon &&
+            ann.position.y <= frameMaxY + _validationEpsilon;
+        final outsideCloth = ann.position.x <= -5.0 + _validationEpsilon ||
+            ann.position.x >= railMaxX - _validationEpsilon ||
+            ann.position.y <= -5.0 + _validationEpsilon ||
+            ann.position.y >= railMaxY - _validationEpsilon;
+        if (!inFrame || !outsideCloth) {
+          return 'Chú thích ${ann.id} (${ann.type.displayName}) phải nằm trên dải băng gỗ xung quanh lòng bàn.';
+        }
+      }
       if (!ann.width.isFinite ||
           ann.width < 0 ||
           !ann.height.isFinite ||
