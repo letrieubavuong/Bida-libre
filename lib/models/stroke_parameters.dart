@@ -133,6 +133,37 @@ class StrokeParameters {
         negativeLabel: 'Dưới',
       );
 
+  /// Kiểm tra tính hợp lệ dữ liệu số của thông số cách đánh tĩnh.
+  String? validate() {
+    if (!tipXMm.isFinite) {
+      return 'Tọa độ mũi cơ X (mm) phải là số hữu hạn.';
+    }
+    if (!tipZMm.isFinite) {
+      return 'Tọa độ mũi cơ Z (mm) phải là số hữu hạn.';
+    }
+    if (!tipDiameterMm.isFinite || tipDiameterMm <= 0) {
+      return 'Đường kính đầu cơ phải là số hữu hạn lớn hơn 0.';
+    }
+    if (eighthCount < 1 || eighthCount > 8) {
+      return 'Độ dày phần tám phải nằm trong khoảng 1 đến 8.';
+    }
+    if (thicknessMode == HitThicknessMode.exact) {
+      if (exactThicknessValue == null || !exactThicknessValue!.isFinite) {
+        return 'Vui lòng nhập giá trị độ dày chính xác hợp lệ (0 đến 1).';
+      }
+      if (exactThicknessValue! < 0.0 || exactThicknessValue! > 1.0) {
+        return 'Độ dày chính xác phải nằm trong khoảng từ 0 đến 1.';
+      }
+    } else if (exactThicknessValue != null) {
+      if (!exactThicknessValue!.isFinite ||
+          exactThicknessValue! < 0.0 ||
+          exactThicknessValue! > 1.0) {
+        return 'Độ dày chính xác phải nằm trong khoảng từ 0 đến 1.';
+      }
+    }
+    return null;
+  }
+
   StrokeParameters copyWith({
     String? cueBallId,
     HitThicknessMode? thicknessMode,

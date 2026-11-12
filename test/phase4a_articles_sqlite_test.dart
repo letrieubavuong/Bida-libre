@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -873,6 +874,499 @@ void main() {
           await repo.close();
           await slowRepo.close();
         });
+      },
+      timeout: const Timeout(Duration(seconds: 20)),
+    );
+  });
+
+  group('Phase 4A — Hồi quy: Back hệ thống, khóa khi lưu, timestamps & kiểm tra số',
+      () {
+    test('createdAt/updatedAt thực tế qua tạo, sửa, nhân bản và mở lại SQLite; kiểm tra số ở tầng dữ liệu',
+        () async {
+      final tempDir = Directory.systemTemp.createTempSync('lb_p4a_reg_ts_');
+      addTearDown(() {
+        if (tempDir.existsSync()) {
+          try {
+            tempDir.deleteSync(recursive: true);
+          } catch (_) {}
+        }
+      });
+      final dbPath = p.join(tempDir.path, 'timestamps.db');
+      final repo1 = SqliteNotebookRepository(dbPath: dbPath);
+      await repo1.initialize();
+
+      // Kiểm tra tầng dữ liệu từ chối số sai
+      final invalidNumbers = <StrokeParameters>[
+        const StrokeParameters(tipXMm: double.nan),
+        const StrokeParameters(tipZMm: double.infinity),
+        const StrokeParameters(
+          thicknessMode: HitThicknessMode.exact,
+          exactThicknessValue: null,
+        ),
+        const StrokeParameters(
+          thicknessMode: HitThicknessMode.exact,
+          exactThicknessValue: -0.05,
+        ),
+        const StrokeParameters(
+          thicknessMode: HitThicknessMode.exact,
+          exactThicknessValue: 1.05,
+        ),
+      ];
+      for (final badStroke in invalidNumbers) {
+        expect(badStroke.validate(), isNotNull);
+        final badArticle = _sampleArticle(
+          kind: ArticleKind.technique,
+          title: 'Bài lỗi số',
+          primaryGroupId: 'tech_draw',
+          stroke: badStroke,
+        );
+        expect(badArticle.validateMinimalForSave(), isNotNull);
+        await expectLater(
+          () => repo1.saveArticle(badArticle),
+          throwsA(isA<FormatException>()),
+        );
+      }
+
+      // Tạo bài mới: ngay cả khi draft truyền sentinel 1970, repo phải gán UTC thực tế
+      final beforeCreate = DateTime.now().toUtc();
+      final sentinelDraft = _sampleArticle(
+        kind: ArticleKind.technique,
+        title: 'Bài kiểm tra thời gian',
+        primaryGroupId: 'tech_draw',
+        stroke: const StrokeParameters(
+          thicknessMode: HitThicknessMode.exact,
+          exactThicknessValue: 0.45,
+          tipXMm: -7.6875,
+          tipZMm: 3.84375,
+        ),
+      ).copyWith(
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+        updatedAt: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+      );
+      final created = await repo1.saveArticle(sentinelDraft);
+      final afterCreate = DateTime.now().toUtc();
+
+      expect(created.createdAt.isUtc, isTrue);
+      expect(created.createdAt, isNot(DateTime.utc(2026)));
+      expect(
+        created.createdAt.isAfter(
+          beforeCreate.subtract(const Duration(seconds: 2)),
+        ),
+        isTrue,
+      );
+      expect(
+        created.createdAt.isBefore(
+          afterCreate.add(const Duration(seconds: 2)),
+        ),
+        isTrue,
+      );
+      expect(created.updatedAt, created.createdAt);
+
+      // Sửa bài -> giữ createdAt, cập nhật updatedAt
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      final edited = await repo1.saveArticle(
+        created.copyWith(title: 'Bài kiểm tra thời gian (đã sửa)'),
+      );
+      expect(edited.createdAt, created.createdAt);
+      expect(edited.updatedAt.isAfter(edited.createdAt), isTrue);
+
+      // Nhân bản -> có thời gian tạo mới
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      final duplicated = await repo1.duplicateArticle(edited.id);
+      expect(duplicated.createdAt.isAfter(edited.createdAt), isTrue);
+      expect(duplicated.updatedAt, duplicated.createdAt);
+      await repo1.close();
+
+      // Mở lại SQLite kiểm tra không đổi thời gian
+      final repo2 = SqliteNotebookRepository(dbPath: dbPath);
+      await repo2.initialize();
+      final reloadedEdited = repo2.getArticleById(edited.id)!;
+      final reloadedDup = repo2.getArticleById(duplicated.id)!;
+      expect(reloadedEdited.createdAt, edited.createdAt);
+      expect(reloadedEdited.updatedAt, edited.updatedAt);
+      expect(reloadedDup.createdAt, duplicated.createdAt);
+      expect(reloadedDup.updatedAt, duplicated.updatedAt);
+      await repo2.close();
+    });
+
+    testWidgets(
+      'Back hệ thống: chưa sửa thoát ngay; sửa 1 ô / chú thích sơ đồ hỏi lưu; hoàn nguyên không báo giả',
+      (tester) async {
+        final tempDir = Directory.systemTemp.createTempSync('lb_p4a_back_');
+        addTearDown(() {
+          if (tempDir.existsSync()) {
+            try {
+              tempDir.deleteSync(recursive: true);
+            } catch (_) {}
+          }
+        });
+        final repo = SqliteNotebookRepository(
+          dbPath: p.join(tempDir.path, 'back.db'),
+        );
+        await tester.runAsync(() => repo.initialize());
+        final saved = await tester.runAsync(
+          () => repo.saveArticle(
+            _sampleArticle(
+              kind: ArticleKind.position,
+              title: 'Bài gốc Back',
+              primaryGroupId: 'corner',
+              diagrams: [
+                ArticleDiagram(
+                  id: 'd_back',
+                  articleId: '',
+                  sortOrder: 0,
+                  caption: 'Chú thích gốc',
+                  scene: DiagramScene.defaultInitial(id: 'scene_back'),
+                ),
+              ],
+            ),
+          ),
+        );
+        final controller = NotebookController(repository: repo);
+        await tester.pumpWidget(LibreBilliardApp(controller: controller));
+        await tester.pumpAndSettle();
+
+        // 1. Mở form tạo mới chưa sửa gì -> Back hệ thống thoát thẳng
+        await tester.tap(find.byKey(const Key('fab_new_article')));
+        await tester.pumpAndSettle();
+        expect(find.byType(ArticleEditorScreen), findsOneWidget);
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        expect(find.byType(ArticleEditorScreen), findsNothing);
+
+        // 2. Mở bài cũ ở tab Hình bi -> Sửa -> chưa sửa gì -> Back hệ thống thoát thẳng
+        await tester.tap(find.text('Hình bi'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('article_card_${saved!.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('detail_edit_button')));
+        await tester.pumpAndSettle();
+        expect(find.byType(ArticleEditorScreen), findsOneWidget);
+
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        expect(find.byType(ArticleEditorScreen), findsNothing);
+
+        // 3. Mở sửa lại -> chỉ sửa 1 ô (tên bài) -> Back hệ thống phải hỏi
+        await tester.tap(find.byKey(const Key('detail_edit_button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('article_title_input')),
+          'Bài gốc Back (đã sửa)',
+        );
+        await tester.pumpAndSettle();
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        expect(find.text('Thay đổi chưa được lưu'), findsOneWidget);
+        await tester.tap(find.text('Ở lại'));
+        await tester.pumpAndSettle();
+
+        // 4. Hoàn nguyên đúng nội dung ban đầu -> Back hệ thống thoát thẳng không báo giả
+        await tester.enterText(
+          find.byKey(const Key('article_title_input')),
+          'Bài gốc Back',
+        );
+        await tester.pumpAndSettle();
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        expect(find.byType(ArticleEditorScreen), findsNothing);
+
+        // 5. Mở sửa lại -> chỉ sửa chú thích sơ đồ -> Back hệ thống phải hỏi
+        await tester.tap(find.byKey(const Key('detail_edit_button')));
+        await tester.pumpAndSettle();
+        final editorScroll = find
+            .descendant(
+              of: find.byType(ArticleEditorScreen),
+              matching: find.byType(Scrollable),
+            )
+            .first;
+        final capInput = find.byKey(const Key('diagram_caption_input_0'));
+        await tester.scrollUntilVisible(
+          capInput,
+          250.0,
+          scrollable: editorScroll,
+        );
+        await tester.ensureVisible(capInput);
+        await tester.pumpAndSettle();
+        await tester.enterText(capInput, 'Chú thích mới');
+        await tester.pumpAndSettle();
+
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        expect(find.text('Thay đổi chưa được lưu'), findsOneWidget);
+        await tester.tap(find.text('Bỏ thay đổi'));
+        await tester.pumpAndSettle();
+        expect(find.byType(ArticleEditorScreen), findsNothing);
+        expect(
+          controller.getArticleById(saved.id)!.diagrams.single.caption,
+          'Chú thích gốc',
+        );
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+        await tester.runAsync(() => repo.close());
+      },
+      timeout: const Timeout(Duration(seconds: 20)),
+    );
+
+    testWidgets(
+      'Khóa toàn bộ form & xử lý focus khi lưu chậm; lưu lỗi giữ nguyên nội dung đã nhập',
+      (tester) async {
+        final tempDir = Directory.systemTemp.createTempSync('lb_p4a_lock_');
+        addTearDown(() {
+          if (tempDir.existsSync()) {
+            try {
+              tempDir.deleteSync(recursive: true);
+            } catch (_) {}
+          }
+        });
+
+        Completer<void>? pendingTx;
+        bool shouldFail = true;
+        final repo = SqliteNotebookRepository(
+          dbPath: p.join(tempDir.path, 'lock.db'),
+          debugTransactionHook: (txn, stage) async {
+            if (stage == 'after_article_insert') {
+              if (pendingTx != null) {
+                await pendingTx.future;
+              }
+              if (shouldFail) {
+                throw const FileSystemException('Simulated save failure');
+              }
+            }
+          },
+        );
+        await tester.runAsync(() => repo.initialize());
+        final controller = NotebookController(repository: repo);
+
+        await tester.pumpWidget(LibreBilliardApp(controller: controller));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('fab_new_article')));
+        await tester.pumpAndSettle();
+
+        // Nhập dữ liệu và thêm 1 bước động, giữ focus ở ô bước
+        await tester.enterText(
+          find.byKey(const Key('article_title_input')),
+          'Bài kiểm tra khóa form',
+        );
+        await tester.enterText(
+          find.byKey(const Key('article_content_input')),
+          'Nội dung cần giữ nguyên nếu lỗi',
+        );
+        final editorScroll = find
+            .descendant(
+              of: find.byType(ArticleEditorScreen),
+              matching: find.byType(Scrollable),
+            )
+            .first;
+        final addStepBtn = find.byKey(const Key('add_step_button'));
+        await tester.scrollUntilVisible(
+          addStepBtn,
+          250.0,
+          scrollable: editorScroll,
+        );
+        await tester.ensureVisible(addStepBtn);
+        await tester.pumpAndSettle();
+        await tester.tap(addStepBtn);
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('step_input_0')), 'Bước A');
+        await tester.pumpAndSettle();
+        expect(FocusManager.instance.primaryFocus?.hasFocus, isTrue);
+
+        // 1. Giả lập lưu thất bại -> giữ nguyên màn hình & nội dung đã nhập
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await tester.pump();
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Chưa thể lưu bài viết'), findsOneWidget);
+        await tester.tap(find.text('Đóng'));
+        await tester.pumpAndSettle();
+
+        expect(find.byType(ArticleEditorScreen), findsOneWidget);
+        expect(
+          tester.widget<TextField>(find.byKey(const Key('step_input_0'))).controller!.text,
+          'Bước A',
+        );
+        final titleFinderCheck = find.byKey(const Key('article_title_input'));
+        await tester.scrollUntilVisible(
+          titleFinderCheck,
+          -250.0,
+          scrollable: editorScroll,
+        );
+        expect(
+          tester.widget<TextField>(titleFinderCheck).controller!.text,
+          'Bài kiểm tra khóa form',
+        );
+
+        // Cuộn lại xuống step_input_0 rồi mở lưu chậm
+        await tester.scrollUntilVisible(
+          find.byKey(const Key('step_input_0')),
+          250.0,
+          scrollable: editorScroll,
+        );
+
+        // 2. Giả lập lưu chậm -> toàn bộ TextField phải disabled & mất focus bàn phím
+        shouldFail = false;
+        pendingTx = Completer<void>();
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await tester.pump();
+
+        expect(controller.isSaving, isTrue);
+        expect(tester.testTextInput.isVisible, isFalse);
+        expect(
+          tester.widget<TextField>(find.byKey(const Key('step_input_0'))).enabled,
+          isFalse,
+        );
+        final titleFinder = find.byKey(const Key('article_title_input'));
+        await tester.scrollUntilVisible(
+          titleFinder,
+          -250.0,
+          scrollable: editorScroll,
+        );
+        expect(tester.widget<TextField>(titleFinder).enabled, isFalse);
+
+        // Hoàn tất giao dịch lưu -> đóng form với bản đã lưu
+        pendingTx.complete();
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pumpAndSettle();
+
+        expect(find.byType(ArticleEditorScreen), findsNothing);
+        expect(controller.visibleArticles.single.title, 'Bài kiểm tra khóa form');
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+        await tester.runAsync(() => repo.close());
+      },
+      timeout: const Timeout(Duration(seconds: 20)),
+    );
+
+    testWidgets(
+      'Kiểm tra số UI: chặn NaN, Infinity, số âm, > 1; hỗ trợ dấu phẩy thập phân và giữ quy ước 4 mức',
+      (tester) async {
+        final tempDir = Directory.systemTemp.createTempSync('lb_p4a_num_');
+        addTearDown(() {
+          if (tempDir.existsSync()) {
+            try {
+              tempDir.deleteSync(recursive: true);
+            } catch (_) {}
+          }
+        });
+        final repo = SqliteNotebookRepository(
+          dbPath: p.join(tempDir.path, 'num.db'),
+        );
+        await tester.runAsync(() => repo.initialize());
+        final controller = NotebookController(repository: repo);
+
+        await tester.pumpWidget(LibreBilliardApp(controller: controller));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('fab_new_article')));
+        await tester.pumpAndSettle();
+
+        await tester.enterText(
+          find.byKey(const Key('article_title_input')),
+          'Bài kiểm tra số',
+        );
+
+        final editorScroll = find
+            .descendant(
+              of: find.byType(ArticleEditorScreen),
+              matching: find.byType(Scrollable),
+            )
+            .first;
+
+        // Chọn chế độ độ dày chính xác
+        final exactModeChip = find.byKey(const Key('stroke_mode_exact'));
+        await tester.scrollUntilVisible(
+          exactModeChip,
+          250.0,
+          scrollable: editorScroll,
+        );
+        await tester.ensureVisible(exactModeChip);
+        await tester.pumpAndSettle();
+        await tester.tap(exactModeChip);
+        await tester.pumpAndSettle();
+
+        final exactInput = find.byKey(const Key('stroke_exact_thickness_input'));
+        final tipXInput = find.byKey(const Key('stroke_tip_x_input'));
+        final tipZInput = find.byKey(const Key('stroke_tip_z_input'));
+
+        // Số âm -> báo lỗi tại trường và chặn lưu
+        await tester.enterText(exactInput, '-0.1');
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Độ dày chính xác phải nằm trong khoảng 0 đến 1.'),
+          findsOneWidget,
+        );
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await tester.pumpAndSettle();
+        expect(find.text('Dữ liệu số chưa hợp lệ'), findsOneWidget);
+        await tester.tap(find.text('Đóng'));
+        await tester.pumpAndSettle();
+        expect(controller.visibleArticles, isEmpty);
+
+        // > 1 -> báo lỗi tại trường và chặn lưu
+        await tester.enterText(exactInput, '1,25');
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Độ dày chính xác phải nằm trong khoảng 0 đến 1.'),
+          findsOneWidget,
+        );
+
+        // Sửa exact về hợp lệ bằng dấu phẩy '0,45' và thử NaN / Infinity ở X/Z
+        await tester.enterText(exactInput, '0,45');
+        await tester.scrollUntilVisible(
+          tipXInput,
+          200.0,
+          scrollable: editorScroll,
+        );
+        await tester.ensureVisible(tipXInput);
+        await tester.pumpAndSettle();
+
+        await tester.enterText(tipXInput, 'NaN');
+        await tester.enterText(tipZInput, 'Infinity');
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Mũi cơ X phải là số hữu hạn (hỗ trợ dấu phẩy).'),
+          findsOneWidget,
+        );
+        expect(
+          find.text('Mũi cơ Z phải là số hữu hạn (hỗ trợ dấu phẩy).'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('Chờ số hợp lệ'), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await tester.pumpAndSettle();
+        expect(find.text('Dữ liệu số chưa hợp lệ'), findsOneWidget);
+        await tester.tap(find.text('Đóng'));
+        await tester.pumpAndSettle();
+        expect(controller.visibleArticles, isEmpty);
+
+        // Nhập dấu phẩy hợp lệ -> hiển thị quy ước 4 mức và lưu thành công
+        await tester.enterText(tipXInput, '7,6875');
+        await tester.enterText(tipZInput, '-3,84375');
+        await tester.pumpAndSettle();
+        expect(find.textContaining('Phải mức 2.0'), findsOneWidget);
+        expect(find.textContaining('Dưới mức 1.0'), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await tester.pump();
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pumpAndSettle();
+
+        expect(find.byType(ArticleEditorScreen), findsNothing);
+        final saved = controller.visibleArticles.single;
+        expect(saved.strokeParameters.thicknessMode, HitThicknessMode.exact);
+        expect(saved.strokeParameters.exactThicknessValue, closeTo(0.45, 1e-9));
+        expect(saved.strokeParameters.tipXMm, closeTo(7.6875, 1e-9));
+        expect(saved.strokeParameters.tipZMm, closeTo(-3.84375, 1e-9));
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+        await tester.runAsync(() => repo.close());
       },
       timeout: const Timeout(Duration(seconds: 20)),
     );

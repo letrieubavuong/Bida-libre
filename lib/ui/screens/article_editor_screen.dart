@@ -28,6 +28,9 @@ class ArticleEditorScreen extends StatefulWidget {
 }
 
 class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
+  static final DateTime _draftSentinelTimestamp =
+      DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+
   final Random _random = Random.secure();
 
   late ArticleKind _kind;
@@ -56,7 +59,33 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
 
   late final String _workingArticleId;
   late final Article _initialBaseline;
+  late final String _initialExactRaw;
+  late final String _initialTipXRaw;
+  late final String _initialTipZRaw;
   bool _savedPopped = false;
+
+  List<TextEditingController> get _fixedTextControllers => [
+        _titleCtrl,
+        _summaryCtrl,
+        _goalCtrl,
+        _contentCtrl,
+        _mistakesCtrl,
+        _sourceCtrl,
+        _authorCtrl,
+        _sourcePageCtrl,
+        _exactThickCtrl,
+        _tipXCtrl,
+        _tipZCtrl,
+        _tipNoteCtrl,
+        _forceCtrl,
+        _styleCtrl,
+      ];
+
+  void _onFormFieldChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
 
   @override
   void initState() {
@@ -99,29 +128,34 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
         .map((d) => TextEditingController(text: d.caption))
         .toList();
 
+    for (final c in _fixedTextControllers) {
+      c.addListener(_onFormFieldChanged);
+    }
+    for (final c in _stepControllers) {
+      c.addListener(_onFormFieldChanged);
+    }
+    for (final c in _diagramCaptionControllers) {
+      c.addListener(_onFormFieldChanged);
+    }
+
+    _initialExactRaw = _exactThickCtrl.text.trim();
+    _initialTipXRaw = _tipXCtrl.text.trim();
+    _initialTipZRaw = _tipZCtrl.text.trim();
     _initialBaseline = _buildCurrentDraft();
   }
 
   @override
   void dispose() {
-    _titleCtrl.dispose();
-    _summaryCtrl.dispose();
-    _goalCtrl.dispose();
-    _contentCtrl.dispose();
-    _mistakesCtrl.dispose();
-    _sourceCtrl.dispose();
-    _authorCtrl.dispose();
-    _sourcePageCtrl.dispose();
-    _exactThickCtrl.dispose();
-    _tipXCtrl.dispose();
-    _tipZCtrl.dispose();
-    _tipNoteCtrl.dispose();
-    _forceCtrl.dispose();
-    _styleCtrl.dispose();
+    for (final c in _fixedTextControllers) {
+      c.removeListener(_onFormFieldChanged);
+      c.dispose();
+    }
     for (final c in _stepControllers) {
+      c.removeListener(_onFormFieldChanged);
       c.dispose();
     }
     for (final c in _diagramCaptionControllers) {
+      c.removeListener(_onFormFieldChanged);
       c.dispose();
     }
     super.dispose();
@@ -140,26 +174,70 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
         '${hex(bytes[13])}${hex(bytes[14])}${hex(bytes[15])}';
   }
 
-  double _parseDoubleOr(String raw, double fallback) {
-    final parsed = double.tryParse(raw.trim().replaceAll(',', '.'));
-    if (parsed == null || !parsed.isFinite) return fallback;
+  double? _tryParseFiniteDouble(String raw) {
+    final normalized = raw.trim().replaceAll(',', '.');
+    if (normalized.isEmpty) return null;
+    final parsed = double.tryParse(normalized);
+    if (parsed == null || !parsed.isFinite) return null;
     return parsed;
   }
 
+  String? get _exactThicknessError {
+    if (_stroke.thicknessMode != HitThicknessMode.exact) {
+      return null;
+    }
+    final raw = _exactThickCtrl.text.trim();
+    if (raw.isEmpty) {
+      return 'Nhập giá trị độ dày (0 đến 1).';
+    }
+    final parsed = _tryParseFiniteDouble(raw);
+    if (parsed == null) {
+      return 'Giá trị độ dày phải là số hữu hạn (hỗ trợ dấu phẩy).';
+    }
+    if (parsed < 0.0 || parsed > 1.0) {
+      return 'Độ dày chính xác phải nằm trong khoảng 0 đến 1.';
+    }
+    return null;
+  }
+
+  String? get _tipXError {
+    final raw = _tipXCtrl.text.trim();
+    if (raw.isEmpty) {
+      return 'Nhập tọa độ mũi cơ X (mm).';
+    }
+    if (_tryParseFiniteDouble(raw) == null) {
+      return 'Mũi cơ X phải là số hữu hạn (hỗ trợ dấu phẩy).';
+    }
+    return null;
+  }
+
+  String? get _tipZError {
+    final raw = _tipZCtrl.text.trim();
+    if (raw.isEmpty) {
+      return 'Nhập tọa độ mũi cơ Z (mm).';
+    }
+    if (_tryParseFiniteDouble(raw) == null) {
+      return 'Mũi cơ Z phải là số hữu hạn (hỗ trợ dấu phẩy).';
+    }
+    return null;
+  }
+
+  String? _firstNumericValidationError() {
+    return _exactThicknessError ?? _tipXError ?? _tipZError;
+  }
+
   Article _buildCurrentDraft({bool? overrideIsDraft}) {
-    final now = widget.existingArticle?.createdAt ?? DateTime.utc(2026);
-    final updated = widget.existingArticle?.updatedAt ?? now;
-    final parsedExact = double.tryParse(
-      _exactThickCtrl.text.trim().replaceAll(',', '.'),
-    );
+    final created = widget.existingArticle?.createdAt ?? _draftSentinelTimestamp;
+    final updated = widget.existingArticle?.updatedAt ?? _draftSentinelTimestamp;
+    final parsedExact = _tryParseFiniteDouble(_exactThickCtrl.text);
+    final parsedTipX = _tryParseFiniteDouble(_tipXCtrl.text);
+    final parsedTipZ = _tryParseFiniteDouble(_tipZCtrl.text);
 
     final stroke = _stroke.copyWith(
-      exactThicknessValue:
-          (parsedExact != null && parsedExact.isFinite) ? parsedExact : null,
-      clearExactThickness:
-          parsedExact == null || !parsedExact.isFinite,
-      tipXMm: _parseDoubleOr(_tipXCtrl.text, _stroke.tipXMm),
-      tipZMm: _parseDoubleOr(_tipZCtrl.text, _stroke.tipZMm),
+      exactThicknessValue: parsedExact,
+      clearExactThickness: parsedExact == null,
+      tipXMm: parsedTipX ?? _stroke.tipXMm,
+      tipZMm: parsedTipZ ?? _stroke.tipZMm,
       tipNote: _tipNoteCtrl.text.trim(),
       forceText: _forceCtrl.text.trim(),
       strokeStyleText: _styleCtrl.text.trim(),
@@ -204,7 +282,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
       isDraft: overrideIsDraft ?? _isDraft,
       strokeParameters: stroke,
       diagrams: updatedDiagrams,
-      createdAt: now,
+      createdAt: created,
       updatedAt: updated,
       isFavorite: widget.existingArticle?.isFavorite ?? false,
       practiceStatus:
@@ -213,13 +291,51 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
     );
   }
 
+  bool _numericFieldChanged(String currentRaw, String initialRaw) {
+    final curTrim = currentRaw.trim();
+    final initTrim = initialRaw.trim();
+    if (curTrim == initTrim) return false;
+    final curVal = _tryParseFiniteDouble(curTrim);
+    final initVal = _tryParseFiniteDouble(initTrim);
+    if (curVal != null && initVal != null && curVal == initVal) {
+      return false;
+    }
+    return true;
+  }
+
   bool get _hasUnsavedChanges {
     if (_savedPopped) return false;
+    if (_numericFieldChanged(_tipXCtrl.text, _initialTipXRaw)) return true;
+    if (_numericFieldChanged(_tipZCtrl.text, _initialTipZRaw)) return true;
+    if (_numericFieldChanged(_exactThickCtrl.text, _initialExactRaw)) {
+      return true;
+    }
     return _buildCurrentDraft() != _initialBaseline;
   }
 
   Future<bool> _saveArticle({bool? forceDraft}) async {
     if (widget.controller.isSaving) return false;
+    FocusManager.instance.primaryFocus?.unfocus();
+
+    final numericError = _firstNumericValidationError();
+    if (numericError != null) {
+      setState(() {});
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Dữ liệu số chưa hợp lệ'),
+          content: Text(numericError),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Đóng'),
+            ),
+          ],
+        ),
+      );
+      return false;
+    }
+
     final draft = _buildCurrentDraft(overrideIsDraft: forceDraft);
     final outcome = await widget.controller.saveArticle(draft);
     if (!mounted) return false;
@@ -312,7 +428,8 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
           scene: result.copyWith(id: newId),
         ),
       );
-      _diagramCaptionControllers.add(TextEditingController());
+      final capCtrl = TextEditingController()..addListener(_onFormFieldChanged);
+      _diagramCaptionControllers.add(capCtrl);
     });
   }
 
@@ -350,6 +467,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
     setState(() {
       _diagrams.removeAt(index);
       final cap = _diagramCaptionControllers.removeAt(index);
+      cap.removeListener(_onFormFieldChanged);
       cap.dispose();
     });
   }
@@ -434,6 +552,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                 TextField(
                   key: const Key('article_title_input'),
                   controller: _titleCtrl,
+                  enabled: !saving,
                   decoration: const InputDecoration(
                     labelText: 'Tên bài viết *',
                     border: OutlineInputBorder(),
@@ -443,6 +562,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                 TextField(
                   key: const Key('article_summary_input'),
                   controller: _summaryCtrl,
+                  enabled: !saving,
                   maxLines: 2,
                   decoration: const InputDecoration(
                     labelText: 'Mô tả ngắn',
@@ -529,6 +649,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                 TextField(
                   key: const Key('article_goal_input'),
                   controller: _goalCtrl,
+                  enabled: !saving,
                   maxLines: 2,
                   decoration: const InputDecoration(
                     labelText: 'Mục tiêu & Tình huống áp dụng',
@@ -539,6 +660,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                 TextField(
                   key: const Key('article_content_input'),
                   controller: _contentCtrl,
+                  enabled: !saving,
                   maxLines: 4,
                   decoration: const InputDecoration(
                     labelText: 'Nội dung giải thích',
@@ -559,7 +681,10 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                           ? null
                           : () {
                               setState(() {
-                                _stepControllers.add(TextEditingController());
+                                _stepControllers.add(
+                                  TextEditingController()
+                                    ..addListener(_onFormFieldChanged),
+                                );
                               });
                             },
                       icon: const Icon(Icons.add),
@@ -576,6 +701,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                           child: TextField(
                             key: Key('step_input_$i'),
                             controller: _stepControllers[i],
+                            enabled: !saving,
                             decoration: InputDecoration(
                               labelText: 'Bước ${i + 1}',
                               isDense: true,
@@ -591,6 +717,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                               : () {
                                   setState(() {
                                     final c = _stepControllers.removeAt(i);
+                                    c.removeListener(_onFormFieldChanged);
                                     c.dispose();
                                   });
                                 },
@@ -602,6 +729,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                 TextField(
                   key: const Key('article_mistakes_input'),
                   controller: _mistakesCtrl,
+                  enabled: !saving,
                   maxLines: 2,
                   decoration: const InputDecoration(
                     labelText: 'Lưu ý / Lỗi thường gặp',
@@ -684,11 +812,13 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                   TextField(
                     key: const Key('stroke_exact_thickness_input'),
                     controller: _exactThickCtrl,
+                    enabled: !saving,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(
-                      labelText: 'Giá trị chạm chính xác (ví dụ 0.45)',
+                    decoration: InputDecoration(
+                      labelText: 'Giá trị chạm chính xác (0 đến 1, vd: 0.45)',
+                      errorText: _exactThicknessError,
                       isDense: true,
-                      border: OutlineInputBorder(),
+                      border: const OutlineInputBorder(),
                     ),
                   ),
                 ],
@@ -729,16 +859,17 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                       child: TextField(
                         key: const Key('stroke_tip_x_input'),
                         controller: _tipXCtrl,
+                        enabled: !saving,
                         keyboardType: const TextInputType.numberWithOptions(
                           decimal: true,
                           signed: true,
                         ),
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'Mũi cơ X (mm, + phải / - trái)',
+                          errorText: _tipXError,
                           isDense: true,
-                          border: OutlineInputBorder(),
+                          border: const OutlineInputBorder(),
                         ),
-                        onChanged: (_) => setState(() {}),
                       ),
                     ),
                     const SizedBox(width: 8.0),
@@ -746,25 +877,45 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                       child: TextField(
                         key: const Key('stroke_tip_z_input'),
                         controller: _tipZCtrl,
+                        enabled: !saving,
                         keyboardType: const TextInputType.numberWithOptions(
                           decimal: true,
                           signed: true,
                         ),
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'Mũi cơ Z (mm, + trên / - dưới)',
+                          errorText: _tipZError,
                           isDense: true,
-                          border: OutlineInputBorder(),
+                          border: const OutlineInputBorder(),
                         ),
-                        onChanged: (_) => setState(() {}),
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 6.0),
-                Text(
-                  'Quy ước 4 mức biên tập: Ngang ${CueTipConvention.describeAxisOffset(_parseDoubleOr(_tipXCtrl.text, _stroke.tipXMm), positiveLabel: 'Phải', negativeLabel: 'Trái')} • '
-                  'Dọc ${CueTipConvention.describeAxisOffset(_parseDoubleOr(_tipZCtrl.text, _stroke.tipZMm), positiveLabel: 'Trên', negativeLabel: 'Dưới')}',
-                  style: Theme.of(context).textTheme.bodySmall,
+                Builder(
+                  builder: (context) {
+                    final parsedX = _tryParseFiniteDouble(_tipXCtrl.text);
+                    final parsedZ = _tryParseFiniteDouble(_tipZCtrl.text);
+                    final xLabel = parsedX == null
+                        ? 'Chờ số hợp lệ'
+                        : CueTipConvention.describeAxisOffset(
+                            parsedX,
+                            positiveLabel: 'Phải',
+                            negativeLabel: 'Trái',
+                          );
+                    final zLabel = parsedZ == null
+                        ? 'Chờ số hợp lệ'
+                        : CueTipConvention.describeAxisOffset(
+                            parsedZ,
+                            positiveLabel: 'Trên',
+                            negativeLabel: 'Dưới',
+                          );
+                    return Text(
+                      'Quy ước 4 mức biên tập: Ngang $xLabel • Dọc $zLabel',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    );
+                  },
                 ),
                 const SizedBox(height: 8.0),
                 Wrap(
@@ -785,6 +936,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                 TextField(
                   key: const Key('stroke_force_input'),
                   controller: _forceCtrl,
+                  enabled: !saving,
                   decoration: const InputDecoration(
                     labelText: 'Lực đánh (văn bản, ví dụ: vừa đủ về)',
                     isDense: true,
@@ -795,6 +947,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                 TextField(
                   key: const Key('stroke_style_input'),
                   controller: _styleCtrl,
+                  enabled: !saving,
                   decoration: const InputDecoration(
                     labelText: 'Kiểu ra cơ (văn bản)',
                     isDense: true,
@@ -875,6 +1028,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                           TextField(
                             key: Key('diagram_caption_input_$i'),
                             controller: _diagramCaptionControllers[i],
+                            enabled: !saving,
                             decoration: const InputDecoration(
                               labelText: 'Chú thích sơ đồ',
                               isDense: true,
@@ -904,6 +1058,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                 TextField(
                   key: const Key('article_source_input'),
                   controller: _sourceCtrl,
+                  enabled: !saving,
                   decoration: const InputDecoration(
                     labelText: 'Tên nguồn / Sách',
                     isDense: true,
@@ -917,6 +1072,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                       child: TextField(
                         key: const Key('article_author_input'),
                         controller: _authorCtrl,
+                        enabled: !saving,
                         decoration: const InputDecoration(
                           labelText: 'Tác giả',
                           isDense: true,
@@ -929,6 +1085,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                       child: TextField(
                         key: const Key('article_source_page_input'),
                         controller: _sourcePageCtrl,
+                        enabled: !saving,
                         decoration: const InputDecoration(
                           labelText: 'Số trang',
                           isDense: true,

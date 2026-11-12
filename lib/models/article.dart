@@ -132,6 +132,10 @@ class Article {
     if (primaryGroupId.trim().isEmpty) {
       return 'Vui lòng chọn nhóm chính cho bài viết.';
     }
+    final strokeErr = strokeParameters.validate();
+    if (strokeErr != null) {
+      return strokeErr;
+    }
     return null;
   }
 

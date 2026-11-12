@@ -420,14 +420,14 @@ class SqliteNotebookRepository implements NotebookRepository {
           resolvedCode = draft.code.trim().isEmpty
               ? await _allocateNextCode(txn, draft.kind)
               : draft.code.trim();
-          resolvedCreatedAt = draft.createdAt.toUtc();
+          resolvedCreatedAt = now;
         } else {
           final row = existingRows.first;
           final prevKind = ArticleKind.fromKey(row['kind'] as String);
           resolvedCode = prevKind == draft.kind
               ? (row['code'] as String)
               : await _allocateNextCode(txn, draft.kind);
-          resolvedCreatedAt = DateTime.parse(row['created_at'] as String);
+          resolvedCreatedAt = DateTime.parse(row['created_at'] as String).toUtc();
         }
 
         final normalizedDiagrams = <ArticleDiagram>[];
