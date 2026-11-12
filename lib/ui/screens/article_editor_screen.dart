@@ -233,9 +233,15 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
     final parsedTipX = _tryParseFiniteDouble(_tipXCtrl.text);
     final parsedTipZ = _tryParseFiniteDouble(_tipZCtrl.text);
 
+    final bool exactWithinRange =
+        parsedExact != null && parsedExact >= 0.0 && parsedExact <= 1.0;
+    final double? effectiveExact = _stroke.thicknessMode == HitThicknessMode.exact
+        ? parsedExact
+        : (exactWithinRange ? parsedExact : null);
+
     final stroke = _stroke.copyWith(
-      exactThicknessValue: parsedExact,
-      clearExactThickness: parsedExact == null,
+      exactThicknessValue: effectiveExact,
+      clearExactThickness: effectiveExact == null,
       tipXMm: parsedTipX ?? _stroke.tipXMm,
       tipZMm: parsedTipZ ?? _stroke.tipZMm,
       tipNote: _tipNoteCtrl.text.trim(),

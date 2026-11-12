@@ -1370,5 +1370,192 @@ void main() {
       },
       timeout: const Timeout(Duration(seconds: 20)),
     );
+
+    testWidgets(
+      'Chuyển chế độ độ dày: Exact 1,25 -> 4/8 & 2/3 lưu thành công; quay lại Exact báo lỗi; Exact 0,45 được giữ nguyên',
+      (tester) async {
+        final tempDir = Directory.systemTemp.createTempSync('lb_p4a_mode_sw_');
+        addTearDown(() {
+          if (tempDir.existsSync()) {
+            try {
+              tempDir.deleteSync(recursive: true);
+            } catch (_) {}
+          }
+        });
+        final dbPath = p.join(tempDir.path, 'mode_switch.db');
+        final repo = SqliteNotebookRepository(dbPath: dbPath);
+        await tester.runAsync(() => repo.initialize());
+        final controller = NotebookController(repository: repo);
+
+        await tester.pumpWidget(LibreBilliardApp(controller: controller));
+        await tester.pumpAndSettle();
+
+        // 1. Tạo bài: chọn Chính xác -> nhập 1,25 -> chuyển Phần tám -> chọn 4/8 -> lưu thành công
+        await tester.tap(find.byKey(const Key('fab_new_article')));
+        await tester.pumpAndSettle();
+
+        await tester.enterText(
+          find.byKey(const Key('article_title_input')),
+          'Bài chuyển chế độ 4/8',
+        );
+
+        final editorScroll = find
+            .descendant(
+              of: find.byType(ArticleEditorScreen),
+              matching: find.byType(Scrollable),
+            )
+            .first;
+
+        final exactChip = find.byKey(const Key('stroke_mode_exact'));
+        await tester.scrollUntilVisible(exactChip, 250.0, scrollable: editorScroll);
+        await tester.ensureVisible(exactChip);
+        await tester.pumpAndSettle();
+        await tester.tap(exactChip);
+        await tester.pumpAndSettle();
+
+        final exactInput = find.byKey(const Key('stroke_exact_thickness_input'));
+        await tester.enterText(exactInput, '1,25');
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Độ dày chính xác phải nằm trong khoảng 0 đến 1.'),
+          findsOneWidget,
+        );
+
+        // Chuyển sang Phần tám & chọn 4/8 -> quay lại Chính xác trước để kiểm tra lỗi vẫn còn
+        final eighthsChip = find.byKey(const Key('stroke_mode_eighths'));
+        await tester.ensureVisible(eighthsChip);
+        await tester.pumpAndSettle();
+        await tester.tap(eighthsChip);
+        await tester.pumpAndSettle();
+
+        final eighth4 = find.byKey(const Key('stroke_eighth_4'));
+        await tester.scrollUntilVisible(eighth4, 150.0, scrollable: editorScroll);
+        await tester.ensureVisible(eighth4);
+        await tester.pumpAndSettle();
+        await tester.tap(eighth4);
+        await tester.pumpAndSettle();
+
+        // Quay lại Chính xác khi dữ liệu trong ô vẫn là 1,25 -> phải hiện lỗi và chặn lưu
+        await tester.scrollUntilVisible(exactChip, -150.0, scrollable: editorScroll);
+        await tester.ensureVisible(exactChip);
+        await tester.pumpAndSettle();
+        await tester.tap(exactChip);
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Độ dày chính xác phải nằm trong khoảng 0 đến 1.'),
+          findsOneWidget,
+        );
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await tester.pumpAndSettle();
+        expect(find.text('Dữ liệu số chưa hợp lệ'), findsOneWidget);
+        await tester.tap(find.text('Đóng'));
+        await tester.pumpAndSettle();
+
+        // Chuyển lại Phần tám 4/8 -> Lưu thành công
+        await tester.ensureVisible(eighthsChip);
+        await tester.pumpAndSettle();
+        await tester.tap(eighthsChip);
+        await tester.pumpAndSettle();
+        await tester.tap(eighth4);
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await tester.pump();
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pumpAndSettle();
+        expect(find.byType(ArticleEditorScreen), findsNothing);
+        expect(controller.visibleArticles.length, 1);
+
+        // Đóng repo, mở lại từ SQLite xác nhận đúng 4/8 và không lưu 1,25
+        await tester.runAsync(() => repo.close());
+        final repoReopen = SqliteNotebookRepository(dbPath: dbPath);
+        await tester.runAsync(() => repoReopen.initialize());
+        final reopened = repoReopen.getArticles().single;
+        expect(reopened.strokeParameters.thicknessMode, HitThicknessMode.eighths);
+        expect(reopened.strokeParameters.eighthCount, 4);
+        expect(reopened.strokeParameters.exactThicknessValue, isNull);
+
+        // 2. Tạo bài mới: Exact sai (-0,2) -> chuyển 2/3 -> lưu thành công;
+        //    và Exact 0,45 -> đổi chế độ -> quay lại vẫn giữ 0,45
+        final controller2 = NotebookController(repository: repoReopen);
+        await tester.pumpWidget(
+          LibreBilliardApp(key: UniqueKey(), controller: controller2),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('fab_new_article')));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('article_title_input')),
+          'Bài chuyển 2/3 và giữ 0,45',
+        );
+
+        final editorScroll2 = find
+            .descendant(
+              of: find.byType(ArticleEditorScreen),
+              matching: find.byType(Scrollable),
+            )
+            .first;
+        final exactChip2 = find.byKey(const Key('stroke_mode_exact'));
+        await tester.scrollUntilVisible(exactChip2, 250.0, scrollable: editorScroll2);
+        await tester.ensureVisible(exactChip2);
+        await tester.pumpAndSettle();
+        await tester.tap(exactChip2);
+        await tester.pumpAndSettle();
+
+        await tester.enterText(
+          find.byKey(const Key('stroke_exact_thickness_input')),
+          '0,45',
+        );
+        await tester.pumpAndSettle();
+
+        // Đổi sang 2/3 rồi quay lại Exact -> vẫn giữ '0,45'
+        final twoThirdsChip = find.byKey(const Key('stroke_mode_two_thirds'));
+        await tester.ensureVisible(twoThirdsChip);
+        await tester.pumpAndSettle();
+        await tester.tap(twoThirdsChip);
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(exactChip2);
+        await tester.pumpAndSettle();
+        await tester.tap(exactChip2);
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widget<TextField>(
+                find.byKey(const Key('stroke_exact_thickness_input')),
+              )
+              .controller!
+              .text,
+          '0,45',
+        );
+
+        // Nhập sai '-0,2' ở Exact -> chuyển sang 2/3 -> lưu thành công
+        await tester.enterText(
+          find.byKey(const Key('stroke_exact_thickness_input')),
+          '-0,2',
+        );
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(twoThirdsChip);
+        await tester.pumpAndSettle();
+        await tester.tap(twoThirdsChip);
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await tester.pump();
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pumpAndSettle();
+        expect(find.byType(ArticleEditorScreen), findsNothing);
+        final saved2 = controller2.visibleArticles
+            .firstWhere((a) => a.title == 'Bài chuyển 2/3 và giữ 0,45');
+        expect(saved2.strokeParameters.thicknessMode, HitThicknessMode.twoThirds);
+        expect(saved2.strokeParameters.exactThicknessValue, isNull);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+        controller2.dispose();
+        await tester.runAsync(() => repoReopen.close());
+      },
+      timeout: const Timeout(Duration(seconds: 20)),
+    );
   });
 }
