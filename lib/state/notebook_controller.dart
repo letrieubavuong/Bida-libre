@@ -312,6 +312,12 @@ class NotebookController extends ChangeNotifier {
     }
   }
 
+  Future<void> discardDraftAssets(Iterable<String> assetIds) async {
+    try {
+      await _repository.discardUncommittedDraftAssets(assetIds);
+    } catch (_) {}
+  }
+
   Future<String?> deleteArticle(String articleId) async {
     if (_isSaving || _isLoading) {
       return 'Hệ thống đang bận thao tác khác, vui lòng chờ.';

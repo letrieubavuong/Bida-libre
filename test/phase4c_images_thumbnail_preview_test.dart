@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:libre_billiard_notebook/main.dart';
 import 'package:libre_billiard_notebook/models/models.dart';
@@ -11,32 +13,33 @@ import 'package:libre_billiard_notebook/repositories/sqlite_notebook_repository.
 import 'package:libre_billiard_notebook/state/notebook_controller.dart';
 import 'package:libre_billiard_notebook/ui/screens/article_detail_screen.dart';
 import 'package:libre_billiard_notebook/ui/screens/article_editor_screen.dart';
+import 'package:libre_billiard_notebook/ui/widgets/article_thumbnail.dart';
 import 'package:libre_billiard_notebook/ui/widgets/billiard_table_canvas.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 /// Valid 1x1 RGBA PNG bytes.
 Uint8List _validPng1x1() => Uint8List.fromList(const [
-      0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, //
-      0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, //
-      0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, //
-      0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, //
-      0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, //
-      0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, //
-      0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, //
-      0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, //
-      0xAE, 0x42, 0x60, 0x82,
-    ]);
+  0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, //
+  0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, //
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, //
+  0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, //
+  0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, //
+  0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, //
+  0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, //
+  0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, //
+  0xAE, 0x42, 0x60, 0x82,
+]);
 
 /// Valid JPEG header (3x2) for format & dimension parser tests.
 Uint8List _validJpegHeader3x2() => Uint8List.fromList(const [
-      0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, //
-      0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, //
-      0x00, 0x01, 0x00, 0x00, //
-      0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x02, 0x00, //
-      0x03, 0x01, 0x01, 0x11, 0x00, //
-      0xFF, 0xD9,
-    ]);
+  0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, //
+  0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, //
+  0x00, 0x01, 0x00, 0x00, //
+  0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x02, 0x00, //
+  0x03, 0x01, 0x01, 0x11, 0x00, //
+  0xFF, 0xD9,
+]);
 
 /// PNG header declaring 9000x1 px (exceeds 8192 px limit).
 Uint8List _oversizedDimensionPng() {
@@ -47,10 +50,11 @@ Uint8List _oversizedDimensionPng() {
 }
 
 Future<void> _flushRealAsync(WidgetTester tester) async {
+  await tester.pump();
   await tester.runAsync(
     () => Future<void>.delayed(const Duration(milliseconds: 50)),
   );
-  await tester.pumpAndSettle();
+  await tester.pump();
 }
 
 Future<void> _waitForFinder(
@@ -64,6 +68,21 @@ Future<void> _waitForFinder(
     );
     await tester.pump();
   }
+}
+
+/// Đóng repo khi còn tác vụ ghi được xếp hàng trong FakeAsync zone
+/// (ví dụ dọn ảnh nháp sau "Bỏ thay đổi"): xen kẽ thời gian thực và pump
+/// để hàng đợi ghi chạy xong, tránh deadlock của runAsync(close).
+Future<void> _closeRepo(WidgetTester tester, SqliteNotebookRepository repo) async {
+  var done = false;
+  Object? error;
+  repo.close().then((_) => done = true, onError: (Object e) {
+    error = e;
+    done = true;
+  });
+  await _waitUntil(tester, () => done, maxTries: 400);
+  if (error != null) throw error!;
+  expect(done, isTrue, reason: 'repo.close() không hoàn tất');
 }
 
 Future<void> _waitUntil(
@@ -167,8 +186,12 @@ void main() {
         });
 
         final dbPath = p.join(tempDir.path, 'notebook_v2.db');
-        final primarySceneFile = File(p.join(tempDir.path, 'primary_scene.json'));
-        primarySceneFile.writeAsStringSync('{"sentinel":"phase3_primary_intact"}');
+        final primarySceneFile = File(
+          p.join(tempDir.path, 'primary_scene.json'),
+        );
+        primarySceneFile.writeAsStringSync(
+          '{"sentinel":"phase3_primary_intact"}',
+        );
 
         await tester.runAsync(() async {
           final dbV2 = await databaseFactory.openDatabase(
@@ -429,8 +452,16 @@ void main() {
                 pickBatch++;
                 if (pickBatch == 1) {
                   return [
-                    (name: '../evil/first.png', path: null, bytes: _validPng1x1()),
-                    (name: 'second.jpg', path: null, bytes: _validJpegHeader3x2()),
+                    (
+                      name: '../evil/first.png',
+                      path: null,
+                      bytes: _validPng1x1(),
+                    ),
+                    (
+                      name: 'second.jpg',
+                      path: null,
+                      bytes: _validJpegHeader3x2(),
+                    ),
                   ];
                 }
                 return [
@@ -446,9 +477,18 @@ void main() {
           find.byKey(const Key('article_title_input')),
           'Bài có ảnh đính kèm',
         );
-        await _scrollToAndTap(tester, find.byKey(const Key('add_image_button')));
-        await _waitForFinder(tester, find.byKey(const Key('editor_image_card_0')));
-        await _waitForFinder(tester, find.byKey(const Key('editor_image_card_1')));
+        await _scrollToAndTap(
+          tester,
+          find.byKey(const Key('add_image_button')),
+        );
+        await _waitForFinder(
+          tester,
+          find.byKey(const Key('editor_image_card_0')),
+        );
+        await _waitForFinder(
+          tester,
+          find.byKey(const Key('editor_image_card_1')),
+        );
 
         await _scrollTo(tester, find.byKey(const Key('editor_image_card_0')));
         expect(find.byKey(const Key('editor_image_card_0')), findsOneWidget);
@@ -488,7 +528,10 @@ void main() {
         expect(saved.images[0].width, 3);
         expect(saved.images[0].height, 2);
         expect(saved.images[0].relativePath.contains('..'), isFalse);
-        expect(saved.images[0].relativePath.startsWith('article_assets/'), isTrue);
+        expect(
+          saved.images[0].relativePath.startsWith('article_assets/'),
+          isTrue,
+        );
         expect(saved.images[1].caption, 'Ảnh PNG đầu');
         expect(saved.images[1].mimeType, 'image/png');
         expect(saved.images[1].width, 1);
@@ -503,7 +546,7 @@ void main() {
         }
 
         // Reopen DB to verify persistence
-        await tester.runAsync(() => repo.close());
+        await _closeRepo(tester, repo);
         final repo2 = SqliteNotebookRepository(
           dbPath: dbPath,
           assetStore: assetStore,
@@ -520,22 +563,61 @@ void main() {
         await tester.pumpWidget(
           MaterialApp(
             key: UniqueKey(),
-            home: ArticleEditorScreen(
-              controller: controller2,
-              existingArticle: reloaded,
-              imagePickerOverride: () async => [
-                (name: 'temp_cancel.png', path: null, bytes: _validPng1x1()),
-              ],
+            home: Builder(
+              builder: (ctx) => Scaffold(
+                body: Center(
+                  child: TextButton(
+                    onPressed: () {
+                      Navigator.of(ctx).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => ArticleEditorScreen(
+                            controller: controller2,
+                            existingArticle: reloaded,
+                            imagePickerOverride: () async => [
+                              (
+                                name: 'temp_cancel.png',
+                                path: null,
+                                bytes: _validPng1x1(),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                    child: const Text('HOME_SENTINEL'),
+                  ),
+                ),
+              ),
             ),
           ),
         );
-        await _scrollToAndTap(tester, find.byKey(const Key('add_image_button')));
+        await tester.tap(find.text('HOME_SENTINEL'));
+        await tester.pumpAndSettle();
+        await _scrollToAndTap(
+          tester,
+          find.byKey(const Key('add_image_button')),
+        );
+        await _waitForFinder(
+          tester,
+          find.byKey(const Key('editor_image_card_2')),
+        );
         await _scrollToAndTap(tester, find.byKey(const Key('delete_image_0')));
 
         await tester.tap(find.byKey(const Key('editor_back_button')));
-        await tester.pumpAndSettle();
+        await _waitForFinder(tester, find.text('Bỏ thay đổi'));
         await tester.tap(find.text('Bỏ thay đổi'));
-        await tester.pumpAndSettle();
+        final stagingDir =
+            Directory(p.join(tempDir.path, 'article_assets_staging'));
+        await _waitUntil(
+          tester,
+          () =>
+              find.text('HOME_SENTINEL').evaluate().isNotEmpty &&
+              (!stagingDir.existsSync() ||
+                  stagingDir
+                      .listSync()
+                      .where((e) => e.path.endsWith('.png'))
+                      .isEmpty),
+        );
 
         // Original 2 committed files still exist & canceled staging file is removed
         for (final img in reloaded.images) {
@@ -547,18 +629,15 @@ void main() {
           );
           expect(f, isNotNull);
         }
-        final stagingDir =
-            Directory(p.join(tempDir.path, 'article_assets_staging'));
         if (stagingDir.existsSync()) {
-          final remainingNames =
-              stagingDir.listSync().map((e) => p.basename(e.path)).toList();
+          final remainingNames = stagingDir
+              .listSync()
+              .map((e) => p.basename(e.path))
+              .toList();
           // Canceled batch only had PNG; none of any newly staged PNGs remain
-          expect(
-            remainingNames.where((n) => n.endsWith('.png')),
-            isEmpty,
-          );
+          expect(remainingNames.where((n) => n.endsWith('.png')), isEmpty);
         }
-        await tester.runAsync(() => repo2.close());
+        await _closeRepo(tester, repo2);
       },
     );
 
@@ -610,8 +689,14 @@ void main() {
           find.byKey(const Key('article_title_input')),
           'Bài thử lỗi lưu ảnh',
         );
-        await _scrollToAndTap(tester, find.byKey(const Key('add_image_button')));
-        await _waitForFinder(tester, find.byKey(const Key('editor_image_card_0')));
+        await _scrollToAndTap(
+          tester,
+          find.byKey(const Key('add_image_button')),
+        );
+        await _waitForFinder(
+          tester,
+          find.byKey(const Key('editor_image_card_0')),
+        );
 
         failPromote = true;
         await tester.tap(find.byKey(const Key('save_article_button')));
@@ -624,9 +709,11 @@ void main() {
         failPromote = false;
         failSqlCommit = true;
         await tester.tap(find.byKey(const Key('save_article_button')));
-        for (var i = 0;
-            i < 15 && find.text('Chưa thể lưu bài viết').evaluate().isEmpty;
-            i++) {
+        for (
+          var i = 0;
+          i < 15 && find.text('Chưa thể lưu bài viết').evaluate().isEmpty;
+          i++
+        ) {
           await _flushRealAsync(tester);
         }
         expect(find.text('Chưa thể lưu bài viết'), findsOneWidget);
@@ -716,7 +803,7 @@ void main() {
         expect(find.text('Bài ảnh bị thiếu tệp'), findsOneWidget);
         expect(find.byKey(const Key('missing_image_0')), findsOneWidget);
 
-        await tester.runAsync(() => repo.close());
+        await _closeRepo(tester, repo);
       },
     );
 
@@ -770,7 +857,10 @@ void main() {
           find.byKey(const Key('article_title_input')),
           'Giữ nháp khi ảnh lỗi',
         );
-        await _scrollToAndTap(tester, find.byKey(const Key('add_image_button')));
+        await _scrollToAndTap(
+          tester,
+          find.byKey(const Key('add_image_button')),
+        );
 
         expect(find.text('Không thể thêm một số ảnh'), findsOneWidget);
         await tester.tap(find.text('Đóng'));
@@ -787,9 +877,9 @@ void main() {
         await tester.runAsync(() async {
           final committed = Directory(p.join(tempDir.path, 'article_assets'))
             ..createSync(recursive: true);
-          final staging =
-              Directory(p.join(tempDir.path, 'article_assets_staging'))
-                ..createSync(recursive: true);
+          final staging = Directory(
+            p.join(tempDir.path, 'article_assets_staging'),
+          )..createSync(recursive: true);
 
           File(p.join(committed.path, 'keep_ref.png'))
               .writeAsBytesSync(_validPng1x1());
@@ -824,7 +914,7 @@ void main() {
           );
         });
 
-        await tester.runAsync(() => repo.close());
+        await _closeRepo(tester, repo);
       },
     );
   });
@@ -917,8 +1007,12 @@ void main() {
         await tester.runAsync(() => controller.initialize());
 
         await tester.pumpWidget(LibreBilliardApp(controller: controller));
-        await _flushRealAsync(tester);
-        await _flushRealAsync(tester);
+        await _waitForFinder(
+          tester,
+          find.byKey(const Key('thumb_image_art_image')),
+          maxTries: 60,
+        );
+        await tester.pumpAndSettle();
 
         expect(find.byKey(const Key('thumb_scene_art_scene')), findsOneWidget);
         expect(find.byKey(const Key('thumb_image_art_image')), findsOneWidget);
@@ -935,7 +1029,7 @@ void main() {
           findsOneWidget,
         );
 
-        await tester.runAsync(() => repo.close());
+        await _closeRepo(tester, repo);
       },
     );
   });
@@ -1006,8 +1100,14 @@ void main() {
           find.byKey(const Key('article_source_url_input')),
           'https://bida.example.com/bai-1',
         );
-        await _scrollToAndTap(tester, find.byKey(const Key('add_image_button')));
-        await _waitForFinder(tester, find.byKey(const Key('editor_image_card_0')));
+        await _scrollToAndTap(
+          tester,
+          find.byKey(const Key('add_image_button')),
+        );
+        await _waitForFinder(
+          tester,
+          find.byKey(const Key('editor_image_card_0')),
+        );
         await _scrollToAndEnterText(
           tester,
           find.byKey(const Key('image_caption_input_0')),
@@ -1057,10 +1157,7 @@ void main() {
         );
         await tester.tap(find.byKey(const Key('open_source_url_button')));
         await tester.pump();
-        expect(
-          launchedUris,
-          [Uri.parse('https://bida.example.com/bai-1')],
-        );
+        expect(launchedUris, [Uri.parse('https://bida.example.com/bai-1')]);
 
         // Chưa ghi vào SQLite hay cấp mã
         expect(repo.getArticles(), isEmpty);
@@ -1075,41 +1172,38 @@ void main() {
           delta: -250.0,
         );
         expect(find.text('Tiêu đề xem trước'), findsOneWidget);
-        await _scrollTo(
-          tester,
-          find.byKey(const Key('image_caption_input_0')),
-        );
+        await _scrollTo(tester, find.byKey(const Key('image_caption_input_0')));
         expect(find.text('Chú thích ảnh xem trước'), findsOneWidget);
 
-        await tester.runAsync(() => repo.close());
+        await _closeRepo(tester, repo);
       },
     );
 
-    testWidgets(
-      'Danh sách 200 bài viết render theo nhu cầu mượt mà',
-      (tester) async {
-        final tempDir = Directory.systemTemp.createTempSync('bida_4c_200_');
-        addTearDown(() {
-          try {
-            if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
-          } catch (_) {}
-        });
+    testWidgets('Danh sách 200 bài viết render theo nhu cầu mượt mà', (
+      tester,
+    ) async {
+      final tempDir = Directory.systemTemp.createTempSync('bida_4c_200_');
+      addTearDown(() {
+        try {
+          if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+        } catch (_) {}
+      });
 
-        final dbPath = p.join(tempDir.path, 'notebook_200.db');
-        final assetStore = ArticleAssetStore(
-          directoryProvider: () async => tempDir,
-        );
-        await tester.runAsync(() async {
-          final db = await databaseFactoryFfiNoIsolate.openDatabase(
-            dbPath,
-            options: OpenDatabaseOptions(
-              version: 2,
-              singleInstance: false,
-              onCreate: (db, _) async {
-                await db.execute(
-                  'CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
-                );
-                await db.execute('''
+      final dbPath = p.join(tempDir.path, 'notebook_200.db');
+      final assetStore = ArticleAssetStore(
+        directoryProvider: () async => tempDir,
+      );
+      await tester.runAsync(() async {
+        final db = await databaseFactoryFfiNoIsolate.openDatabase(
+          dbPath,
+          options: OpenDatabaseOptions(
+            version: 2,
+            singleInstance: false,
+            onCreate: (db, _) async {
+              await db.execute(
+                'CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+              );
+              await db.execute('''
                   CREATE TABLE editorial_groups (
                     id TEXT PRIMARY KEY,
                     kind TEXT NOT NULL,
@@ -1118,7 +1212,7 @@ void main() {
                     sort_order INTEGER NOT NULL
                   )
                 ''');
-                await db.execute('''
+              await db.execute('''
                   CREATE TABLE articles (
                     id TEXT PRIMARY KEY,
                     code TEXT NOT NULL UNIQUE,
@@ -1144,7 +1238,7 @@ void main() {
                     related_article_ids_json TEXT NOT NULL
                   )
                 ''');
-                await db.execute('''
+              await db.execute('''
                   CREATE TABLE article_diagrams (
                     id TEXT PRIMARY KEY,
                     article_id TEXT NOT NULL,
@@ -1153,13 +1247,13 @@ void main() {
                     scene_json TEXT NOT NULL
                   )
                 ''');
-                await db.execute('''
+              await db.execute('''
                   CREATE TABLE code_counters (
                     kind TEXT PRIMARY KEY,
                     last_number INTEGER NOT NULL
                   )
                 ''');
-                await db.execute('''
+              await db.execute('''
                   CREATE TABLE tags (
                     id TEXT PRIMARY KEY,
                     normalized_key TEXT NOT NULL UNIQUE,
@@ -1168,7 +1262,7 @@ void main() {
                     created_at TEXT NOT NULL
                   )
                 ''');
-                await db.execute('''
+              await db.execute('''
                   CREATE TABLE collections (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -1176,7 +1270,7 @@ void main() {
                     updated_at TEXT NOT NULL
                   )
                 ''');
-                await db.execute('''
+              await db.execute('''
                   CREATE TABLE collection_items (
                     collection_id TEXT NOT NULL,
                     article_id TEXT NOT NULL,
@@ -1184,74 +1278,584 @@ void main() {
                     PRIMARY KEY (collection_id, article_id)
                   )
                 ''');
-                await db.insert('meta', {
-                  'key': 'default_groups_seeded',
-                  'value': '1',
-                });
-                await db.insert('editorial_groups', {
-                  'id': 'grp_unclassified_technique',
-                  'kind': 'technique',
-                  'name': 'Chưa phân loại',
-                  'description': '',
-                  'sort_order': 0,
-                });
-                final strokeJson =
-                    jsonEncode(const StrokeParameters.defaults().toJson());
-                await db.transaction((txn) async {
-                  final batch = txn.batch();
-                  for (var i = 0; i < 200; i++) {
-                    batch.insert('articles', {
-                      'id': 'art_200_$i',
-                      'code': 'KT-${(i + 1).toString().padLeft(3, '0')}',
-                      'kind': 'technique',
-                      'title': 'Bài kiểm thử $i',
-                      'summary': '',
-                      'primary_group_id': 'grp_unclassified_technique',
-                      'tags_json': '[]',
-                      'difficulty': 'basic',
-                      'goal': '',
-                      'content': 'Nội dung $i',
-                      'steps_json': '[]',
-                      'common_mistakes': '',
-                      'source': null,
-                      'author': null,
-                      'source_page': null,
-                      'is_draft': 0,
-                      'stroke_params_json': strokeJson,
-                      'created_at': '2026-11-12T08:00:00.000Z',
-                      'updated_at': '2026-11-12T08:00:00.000Z',
-                      'is_favorite': 0,
-                      'practice_status': 'not_started',
-                      'related_article_ids_json': '[]',
-                    });
-                  }
-                  await batch.commit(noResult: true);
-                });
-              },
-            ),
-          );
-          await db.close();
+              await db.insert('meta', {
+                'key': 'default_groups_seeded',
+                'value': '1',
+              });
+              await db.insert('editorial_groups', {
+                'id': 'grp_unclassified_technique',
+                'kind': 'technique',
+                'name': 'Chưa phân loại',
+                'description': '',
+                'sort_order': 0,
+              });
+              final strokeJson = jsonEncode(
+                const StrokeParameters.defaults().toJson(),
+              );
+              await db.transaction((txn) async {
+                final batch = txn.batch();
+                for (var i = 0; i < 200; i++) {
+                  batch.insert('articles', {
+                    'id': 'art_200_$i',
+                    'code': 'KT-${(i + 1).toString().padLeft(3, '0')}',
+                    'kind': 'technique',
+                    'title': 'Bài kiểm thử $i',
+                    'summary': '',
+                    'primary_group_id': 'grp_unclassified_technique',
+                    'tags_json': '[]',
+                    'difficulty': 'basic',
+                    'goal': '',
+                    'content': 'Nội dung $i',
+                    'steps_json': '[]',
+                    'common_mistakes': '',
+                    'source': null,
+                    'author': null,
+                    'source_page': null,
+                    'is_draft': 0,
+                    'stroke_params_json': strokeJson,
+                    'created_at': '2026-11-12T08:00:00.000Z',
+                    'updated_at': '2026-11-12T08:00:00.000Z',
+                    'is_favorite': 0,
+                    'practice_status': 'not_started',
+                    'related_article_ids_json': '[]',
+                  });
+                }
+                await batch.commit(noResult: true);
+              });
+            },
+          ),
+        );
+        await db.close();
+      });
+
+      final repo = SqliteNotebookRepository(
+        dbPath: dbPath,
+        assetStore: assetStore,
+      );
+      final controller = NotebookController(repository: repo);
+      await tester.runAsync(() => controller.initialize());
+
+      await tester.pumpWidget(LibreBilliardApp(controller: controller));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await tester.pump();
+      await _flushRealAsync(tester);
+
+      expect(repo.getArticles().length, 200);
+      // ListView.builder only materializes visible items, not all 200 widgets at once
+      expect(find.byType(ListTile).evaluate().length, lessThan(30));
+
+      await _closeRepo(tester, repo);
+    });
+  });
+
+  group('Phase 4C — Hồi quy: Nhập ảnh async, Thumbnail live & Dọn ảnh sau lỗi SQLite', () {
+    testWidgets(
+      'Giả lập staging chậm: chặn Lưu, Lưu nháp, Xem trước, thoát editor & nhập chồng',
+      (tester) async {
+        final tempDir = Directory.systemTemp.createTempSync('bida_4c_slow_');
+        addTearDown(() {
+          try {
+            if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+          } catch (_) {}
         });
 
+        final stageGate = Completer<void>();
+        final assetStore = ArticleAssetStore(
+          directoryProvider: () async => tempDir,
+          debugAssetHook: (stage, _) async {
+            if (stage == 'before_stage_write' && !stageGate.isCompleted) {
+              await stageGate.future;
+            }
+          },
+        );
         final repo = SqliteNotebookRepository(
-          dbPath: dbPath,
+          dbPath: p.join(tempDir.path, 'notebook.db'),
           assetStore: assetStore,
         );
         final controller = NotebookController(repository: repo);
         await tester.runAsync(() => controller.initialize());
 
-        await tester.pumpWidget(LibreBilliardApp(controller: controller));
-        await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        var pickerCalls = 0;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ArticleEditorScreen(
+              controller: controller,
+              imagePickerOverride: () async {
+                pickerCalls++;
+                return [(name: 'slow.png', path: null, bytes: _validPng1x1())];
+              },
+            ),
+          ),
+        );
+
+        await _scrollToAndEnterText(
+          tester,
+          find.byKey(const Key('article_title_input')),
+          'Bài thử staging chậm',
+        );
+
+        // Bắt đầu staging chậm
+        await _scrollTo(tester, find.byKey(const Key('add_image_button')));
+        await tester.tap(find.byKey(const Key('add_image_button')));
+        await tester.pump();
+
+        expect(
+          find.byKey(const Key('importing_images_banner')),
+          findsOneWidget,
+        );
+        expect(
+          tester
+              .widget<FilledButton>(
+                find.byKey(const Key('save_article_button')),
+              )
+              .onPressed,
+          isNull,
+        );
+        expect(
+          tester
+              .widget<TextButton>(find.byKey(const Key('save_draft_button')))
+              .onPressed,
+          isNull,
+        );
+        expect(
+          tester
+              .widget<IconButton>(
+                find.byKey(const Key('preview_article_button')),
+              )
+              .onPressed,
+          isNull,
+        );
+        expect(
+          tester
+              .widget<IconButton>(find.byKey(const Key('editor_back_button')))
+              .onPressed,
+          isNull,
+        );
+
+        // Chặn nhập chồng & thoát bằng back hệ thống trong lúc staging
+        await tester.tap(find.byKey(const Key('add_image_button')));
+        await tester.pump();
+        expect(pickerCalls, 1);
+
+        final navState = tester.state<NavigatorState>(find.byType(Navigator));
+        await navState.maybePop();
+        await tester.pump();
+        expect(find.byType(ArticleEditorScreen), findsOneWidget);
+        expect(find.text('HOME_SENTINEL'), findsNothing);
+
+        // Hoàn tất staging -> giải phóng trạng thái bận và lưu thành công đủ ảnh
+        stageGate.complete();
+        await _waitForFinder(
+          tester,
+          find.byKey(const Key('editor_image_card_0')),
         );
         await tester.pump();
+        expect(find.byKey(const Key('importing_images_banner')), findsNothing);
+
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await _waitUntil(tester, () => repo.getArticles().isNotEmpty);
+        expect(repo.getArticles().first.images.length, 1);
+
+        await _closeRepo(tester, repo);
+      },
+    );
+
+    testWidgets(
+      'Giả lập lỗi ImagePicker: hiển thị thông báo và form trở lại dùng được',
+      (tester) async {
+        final tempDir = Directory.systemTemp.createTempSync('bida_4c_pickerr_');
+        addTearDown(() {
+          try {
+            if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+          } catch (_) {}
+        });
+
+        final assetStore = ArticleAssetStore(
+          directoryProvider: () async => tempDir,
+        );
+        final repo = SqliteNotebookRepository(
+          dbPath: p.join(tempDir.path, 'notebook.db'),
+          assetStore: assetStore,
+        );
+        final controller = NotebookController(repository: repo);
+        await tester.runAsync(() => controller.initialize());
+
+        var attempt = 0;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ArticleEditorScreen(
+              controller: controller,
+              imagePickerOverride: () async {
+                attempt++;
+                if (attempt == 1) {
+                  throw PlatformException(
+                    code: 'photo_access_denied',
+                    message: 'Permission denied',
+                  );
+                }
+                return [
+                  (name: 'recovered.png', path: null, bytes: _validPng1x1()),
+                ];
+              },
+            ),
+          ),
+        );
+
+        await _scrollToAndEnterText(
+          tester,
+          find.byKey(const Key('article_title_input')),
+          'Bài hồi phục sau lỗi picker',
+        );
+
+        await _scrollToAndTap(
+          tester,
+          find.byKey(const Key('add_image_button')),
+        );
+        await _waitForFinder(tester, find.text('Không thể chọn ảnh'));
+        expect(find.text('Không thể chọn ảnh'), findsOneWidget);
+        await tester.tap(find.text('Đóng'));
+        await tester.pumpAndSettle();
+
+        // Trạng thái bận đã được giải phóng, chọn lại thành công
+        expect(find.byKey(const Key('importing_images_banner')), findsNothing);
+        await _scrollToAndTap(
+          tester,
+          find.byKey(const Key('add_image_button')),
+        );
+        await _waitForFinder(
+          tester,
+          find.byKey(const Key('editor_image_card_0')),
+        );
+
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await _waitUntil(tester, () => repo.getArticles().isNotEmpty);
+        expect(repo.getArticles().first.images.length, 1);
+
+        await _closeRepo(tester, repo);
+      },
+    );
+
+    testWidgets(
+      'Bài có scene + ảnh -> xóa scene cuối -> thumbnail chuyển sang ảnh ngay trên cùng widget',
+      (tester) async {
+        final tempDir = Directory.systemTemp.createTempSync(
+          'bida_4c_live_thumb_',
+        );
+        addTearDown(() {
+          try {
+            if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+          } catch (_) {}
+        });
+
+        final assetStore = ArticleAssetStore(
+          directoryProvider: () async => tempDir,
+        );
+        final staged = await tester.runAsync(
+          () => assetStore.stageImageBytes(
+            assetId: 'live_thumb_asset',
+            bytes: _validPng1x1(),
+            originalName: 'live.png',
+          ),
+        );
+        await tester.runAsync(
+          () => assetStore.promoteStagedAsset(
+            assetId: staged!.assetId,
+            relativePath: staged.relativePath,
+          ),
+        );
+
+        var currentArticle = _makeArticle(
+          id: 'art_live_thumb',
+          title: 'Bài đổi thumbnail trực tiếp',
+          diagrams: [
+            ArticleDiagram(
+              id: 'd_live',
+              articleId: 'art_live_thumb',
+              sortOrder: 0,
+              caption: 'Sơ đồ 1',
+              scene: DiagramScene.defaultInitial(id: 'd_live'),
+            ),
+          ],
+          images: [
+            ArticleImageAttachment(
+              id: 'img_live',
+              articleId: 'art_live_thumb',
+              assetId: staged!.assetId,
+              relativePath: staged.relativePath,
+              originalName: 'live.png',
+              mimeType: 'image/png',
+              sizeBytes: staged.sizeBytes,
+              width: 1,
+              height: 1,
+              sortOrder: 0,
+            ),
+          ],
+        );
+
+        late void Function(VoidCallback) triggerRebuild;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: StatefulBuilder(
+                builder: (context, setState) {
+                  triggerRebuild = setState;
+                  return ArticleThumbnail(
+                    key: const ValueKey('persistent_thumb_widget'),
+                    article: currentArticle,
+                    assetStore: assetStore,
+                  );
+                },
+              ),
+            ),
+          ),
+        );
         await _flushRealAsync(tester);
 
-        expect(repo.getArticles().length, 200);
-        // ListView.builder only materializes visible items, not all 200 widgets at once
-        expect(find.byType(ListTile).evaluate().length, lessThan(30));
+        expect(
+          find.byKey(const Key('thumb_scene_art_live_thumb')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('thumb_image_art_live_thumb')),
+          findsNothing,
+        );
 
-        await tester.runAsync(() => repo.close());
+        // Xóa scene cuối cùng (giữ nguyên assetId & relativePath ảnh) trên CÙNG widget
+        triggerRebuild(() {
+          currentArticle = currentArticle.copyWith(diagrams: const []);
+        });
+        await tester.pump();
+        await _waitForFinder(
+          tester,
+          find.byKey(const Key('thumb_image_art_live_thumb')),
+        );
+
+        expect(
+          find.byKey(const Key('thumb_scene_art_live_thumb')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const Key('thumb_image_art_live_thumb')),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'Thêm ảnh -> promote thành công -> SQLite lỗi -> Bỏ thay đổi: xóa tệp mới mồ côi, giữ nguyên ảnh bài cũ',
+      (tester) async {
+        final tempDir = Directory.systemTemp.createTempSync('bida_4c_discard_');
+        addTearDown(() {
+          try {
+            if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+          } catch (_) {}
+        });
+
+        var failSqlCommit = false;
+        final assetStore = ArticleAssetStore(
+          directoryProvider: () async => tempDir,
+        );
+        final repo = SqliteNotebookRepository(
+          dbPath: p.join(tempDir.path, 'notebook.db'),
+          assetStore: assetStore,
+          debugTransactionHook: (_, stage) async {
+            if (failSqlCommit && stage == 'before_commit') {
+              throw Exception('Simulated SQLite error after promote');
+            }
+          },
+        );
+        final controller = NotebookController(repository: repo);
+        await tester.runAsync(() => controller.initialize());
+
+        // Lưu bài gốc với 1 ảnh ban đầu
+        final origStaged = await tester.runAsync(
+          () => assetStore.stageImageBytes(
+            assetId: 'orig_asset_1',
+            bytes: _validPng1x1(),
+            originalName: 'orig.png',
+          ),
+        );
+        final savedOrig = await tester.runAsync(
+          () => controller.saveArticle(
+            _makeArticle(
+              title: 'Bài gốc có ảnh',
+              images: [
+                ArticleImageAttachment(
+                  id: 'orig_img_row',
+                  assetId: origStaged!.assetId,
+                  relativePath: origStaged.relativePath,
+                  originalName: 'orig.png',
+                  mimeType: 'image/png',
+                  sizeBytes: origStaged.sizeBytes,
+                  width: 1,
+                  height: 1,
+                  sortOrder: 0,
+                ),
+              ],
+            ),
+          ),
+        );
+        expect(savedOrig!.isSuccess, isTrue);
+        final origFile = await tester.runAsync(
+          () => assetStore.resolveRelativePath(origStaged!.relativePath),
+        );
+        expect(origFile!.existsSync(), isTrue);
+
+        // Mở editor sửa bài, thêm ảnh thứ 2, promote thành công nhưng SQLite lỗi
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ArticleEditorScreen(
+              controller: controller,
+              existingArticle: savedOrig.article,
+              imagePickerOverride: () async => [
+                (name: 'new_fail.png', path: null, bytes: _validPng1x1()),
+              ],
+            ),
+          ),
+        );
+
+        await _scrollToAndTap(
+          tester,
+          find.byKey(const Key('add_image_button')),
+        );
+        await _waitForFinder(
+          tester,
+          find.byKey(const Key('editor_image_card_1')),
+        );
+
+        failSqlCommit = true;
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await _waitForFinder(tester, find.text('Chưa thể lưu bài viết'));
+        expect(find.text('Chưa thể lưu bài viết'), findsOneWidget);
+        await tester.tap(find.text('Đóng'));
+        await tester.pumpAndSettle();
+
+        // Lúc này ảnh mới đã được promote sang article_assets/ (có 2 tệp trong article_assets/)
+        final committedDir = Directory(p.join(tempDir.path, 'article_assets'));
+        expect(committedDir.listSync().length, 2);
+
+        // Hủy sửa (Bỏ thay đổi) -> phải dọn tệp mới đã promote, giữ nguyên ảnh bài gốc
+        await tester.tap(find.byKey(const Key('editor_back_button')));
+        await _waitForFinder(tester, find.text('Bỏ thay đổi'));
+        await tester.tap(find.text('Bỏ thay đổi'));
+        await _waitUntil(tester, () => committedDir.listSync().length == 1);
+
+        expect(origFile.existsSync(), isTrue);
+        expect(committedDir.listSync().length, 1);
+        final stagingDir = Directory(
+          p.join(tempDir.path, 'article_assets_staging'),
+        );
+        if (stagingDir.existsSync()) {
+          expect(stagingDir.listSync(), isEmpty);
+        }
+        expect(repo.getArticleById(savedOrig.article!.id)!.images.length, 1);
+
+        await _closeRepo(tester, repo);
+      },
+    );
+
+    testWidgets(
+      'Thêm ảnh -> promote thành công -> SQLite lỗi -> thử lưu lại: ảnh được lưu đầy đủ',
+      (tester) async {
+        final tempDir = Directory.systemTemp.createTempSync('bida_4c_retry_');
+        addTearDown(() {
+          try {
+            if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+          } catch (_) {}
+        });
+
+        var failSqlCommit = false;
+        final assetStore = ArticleAssetStore(
+          directoryProvider: () async => tempDir,
+        );
+        final repo = SqliteNotebookRepository(
+          dbPath: p.join(tempDir.path, 'notebook.db'),
+          assetStore: assetStore,
+          debugTransactionHook: (_, stage) async {
+            if (failSqlCommit && stage == 'before_commit') {
+              throw Exception('Simulated SQLite error before retry');
+            }
+          },
+        );
+        final controller = NotebookController(repository: repo);
+        await tester.runAsync(() => controller.initialize());
+
+        final origStaged = await tester.runAsync(
+          () => assetStore.stageImageBytes(
+            assetId: 'orig_asset_retry',
+            bytes: _validPng1x1(),
+            originalName: 'orig.png',
+          ),
+        );
+        final savedOrig = await tester.runAsync(
+          () => controller.saveArticle(
+            _makeArticle(
+              title: 'Bài thử lưu lại sau lỗi SQLite',
+              images: [
+                ArticleImageAttachment(
+                  id: 'orig_img_retry',
+                  assetId: origStaged!.assetId,
+                  relativePath: origStaged.relativePath,
+                  originalName: 'orig.png',
+                  mimeType: 'image/png',
+                  sizeBytes: origStaged.sizeBytes,
+                  width: 1,
+                  height: 1,
+                  sortOrder: 0,
+                ),
+              ],
+            ),
+          ),
+        );
+        expect(savedOrig!.isSuccess, isTrue);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ArticleEditorScreen(
+              controller: controller,
+              existingArticle: savedOrig.article,
+              imagePickerOverride: () async => [
+                (name: 'retry_ok.png', path: null, bytes: _validPng1x1()),
+              ],
+            ),
+          ),
+        );
+
+        await _scrollToAndTap(
+          tester,
+          find.byKey(const Key('add_image_button')),
+        );
+        await _waitForFinder(
+          tester,
+          find.byKey(const Key('editor_image_card_1')),
+        );
+
+        failSqlCommit = true;
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await _waitForFinder(tester, find.text('Chưa thể lưu bài viết'));
+        await tester.tap(find.text('Đóng'));
+        await tester.pumpAndSettle();
+
+        // Thử lưu lại khi hết lỗi -> cả 2 ảnh được lưu đầy đủ vào SQLite
+        failSqlCommit = false;
+        await tester.tap(find.byKey(const Key('save_article_button')));
+        await _waitUntil(
+          tester,
+          () => repo.getArticleById(savedOrig.article!.id)!.images.length == 2,
+        );
+
+        final updated = repo.getArticleById(savedOrig.article!.id)!;
+        expect(updated.images.length, 2);
+        for (final img in updated.images) {
+          final f = await tester.runAsync(
+            () => assetStore.resolveRelativePath(img.relativePath),
+          );
+          expect(f!.existsSync(), isTrue);
+        }
+
+        await _closeRepo(tester, repo);
       },
     );
   });

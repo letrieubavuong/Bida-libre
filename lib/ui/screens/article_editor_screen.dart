@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -55,6 +54,30 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
   late List<TextEditingController> _diagramCaptionControllers;
   late List<TextEditingController> _imageCaptionControllers;
   final List<String> _newlyStagedAssetIds = [];
+  bool _isImportingImages = false;
+  bool _isDisposed = false;
+
+  /// Cache bytes thumbnail theo assetId|relativePath. Đọc bytes rồi đóng handle
+  /// ngay, tránh Image.file giữ khóa tệp (Windows) khi promote/xóa tài nguyên.
+  final Map<String, Future<Uint8List?>> _thumbBytesCache = {};
+
+  Future<Uint8List?> _thumbBytesFor(ArticleImageAttachment image) {
+    final key = '${image.assetId}|${image.relativePath}';
+    return _thumbBytesCache.putIfAbsent(key, () async {
+      try {
+        final file = await widget.controller.assetStore.findExistingFile(
+          assetId: image.assetId,
+          relativePath: image.relativePath,
+        );
+        // Đọc đồng bộ: mở-đọc-đóng handle ngay, không tạo thêm I/O bất đồng bộ.
+        return file?.readAsBytesSync();
+      } catch (_) {
+        return null;
+      }
+    });
+  }
+
+  bool get _isBusy => widget.controller.isSaving || _isImportingImages;
 
   late final TextEditingController _titleCtrl;
   late final TextEditingController _summaryCtrl;
@@ -192,6 +215,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
       c.removeListener(_onFormFieldChanged);
       c.dispose();
     }
+    _isDisposed = true;
     super.dispose();
   }
 
@@ -419,7 +443,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
   }
 
   Future<bool> _saveArticle({bool? forceDraft}) async {
-    if (widget.controller.isSaving) return false;
+    if (_isBusy) return false;
     FocusManager.instance.primaryFocus?.unfocus();
 
     final numericError = _firstNumericValidationError();
@@ -477,7 +501,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
   }
 
   Future<void> _handleExit() async {
-    if (widget.controller.isSaving) return;
+    if (_isBusy) return;
     if (!_hasUnsavedChanges) {
       Navigator.of(context).pop();
       return;
@@ -509,19 +533,20 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
 
     if (!mounted) return;
     if (choice == 'discard') {
-      await widget.controller.assetStore
-          .discardStagingAssets(_newlyStagedAssetIds);
+      final assetsToDiscard = List<String>.from(_newlyStagedAssetIds);
       _newlyStagedAssetIds.clear();
-      if (!mounted) return;
       _savedPopped = true;
       Navigator.of(context).pop();
+      PaintingBinding.instance.imageCache.clear();
+      PaintingBinding.instance.imageCache.clearLiveImages();
+      await widget.controller.discardDraftAssets(assetsToDiscard);
     } else if (choice == 'save') {
       await _saveArticle();
     }
   }
 
   Future<void> _openPreview() async {
-    if (widget.controller.isSaving) return;
+    if (_isBusy) return;
     FocusManager.instance.primaryFocus?.unfocus();
     final numericError = _firstNumericValidationError();
     final formError = _firstFormValidationError();
@@ -573,81 +598,117 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
   }
 
   Future<void> _pickImages() async {
-    if (widget.controller.isSaving) return;
-    final List<({String name, String? path, Uint8List? bytes})> picked;
-    if (widget.imagePickerOverride != null) {
-      picked = await widget.imagePickerOverride!();
-    } else {
-      final picker = ImagePicker();
-      final files = await picker.pickMultiImage();
-      picked = [
-        for (final f in files) (name: f.name, path: f.path, bytes: null),
-      ];
-    }
-    if (picked.isEmpty || !mounted) return;
-
-    final errors = <String>[];
-    for (final item in picked) {
+    if (_isBusy) return;
+    setState(() => _isImportingImages = true);
+    try {
+      final List<({String name, String? path, Uint8List? bytes})> picked;
       try {
-        final assetId = _freshUuid();
-        final StagedImageAsset staged;
-        if (item.bytes != null) {
-          staged = await widget.controller.assetStore.stageImageBytes(
-            assetId: assetId,
-            bytes: item.bytes!,
-            originalName: item.name,
-          );
-        } else if (item.path != null && item.path!.isNotEmpty) {
-          staged = await widget.controller.assetStore.stageImageFile(
-            assetId: assetId,
-            sourceFilePath: item.path!,
-            originalName: item.name,
-          );
+        if (widget.imagePickerOverride != null) {
+          picked = await widget.imagePickerOverride!();
         } else {
-          errors.add('${item.name}: Không đọc được đường dẫn hoặc dữ liệu ảnh.');
-          continue;
+          final picker = ImagePicker();
+          final files = await picker.pickMultiImage();
+          picked = [
+            for (final f in files) (name: f.name, path: f.path, bytes: null),
+          ];
         }
-        if (!mounted) return;
-        final captionCtrl = TextEditingController()
-          ..addListener(_onFormFieldChanged);
-        setState(() {
-          _newlyStagedAssetIds.add(staged.assetId);
-          _images.add(
-            ArticleImageAttachment(
-              id: _freshUuid(),
-              articleId: _workingArticleId,
-              assetId: staged.assetId,
-              relativePath: staged.relativePath,
-              originalName: staged.originalName,
-              mimeType: staged.mimeType,
-              sizeBytes: staged.sizeBytes,
-              width: staged.width,
-              height: staged.height,
-              caption: '',
-              sortOrder: _images.length,
+      } catch (e) {
+        if (mounted && !_isDisposed) {
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Không thể chọn ảnh'),
+              content: Text('Lỗi từ trình chọn ảnh: $e'),
+              actions: [
+                FilledButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('Đóng'),
+                ),
+              ],
             ),
           );
-          _imageCaptionControllers.add(captionCtrl);
-        });
-      } catch (e) {
-        errors.add('${item.name}: $e');
+        }
+        return;
       }
-    }
 
-    if (errors.isNotEmpty && mounted) {
-      await showDialog<void>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Không thể thêm một số ảnh'),
-          content: Text(errors.join('\n')),
-          actions: [
-            FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Đóng'),
-            ),
-          ],
-        ),
-      );
+      if (picked.isEmpty || !mounted || _isDisposed) return;
+
+      final errors = <String>[];
+      for (final item in picked) {
+        if (!mounted || _isDisposed) break;
+        try {
+          final assetId = _freshUuid();
+          final StagedImageAsset staged;
+          if (item.bytes != null) {
+            staged = await widget.controller.assetStore.stageImageBytes(
+              assetId: assetId,
+              bytes: item.bytes!,
+              originalName: item.name,
+            );
+          } else if (item.path != null && item.path!.isNotEmpty) {
+            staged = await widget.controller.assetStore.stageImageFile(
+              assetId: assetId,
+              sourceFilePath: item.path!,
+              originalName: item.name,
+            );
+          } else {
+            errors.add(
+              '${item.name}: Không đọc được đường dẫn hoặc dữ liệu ảnh.',
+            );
+            continue;
+          }
+          if (!mounted || _isDisposed) {
+            await widget.controller.assetStore
+                .discardStagingAssets([staged.assetId]);
+            return;
+          }
+          final captionCtrl = TextEditingController()
+            ..addListener(_onFormFieldChanged);
+          setState(() {
+            _newlyStagedAssetIds.add(staged.assetId);
+            _images.add(
+              ArticleImageAttachment(
+                id: _freshUuid(),
+                articleId: _workingArticleId,
+                assetId: staged.assetId,
+                relativePath: staged.relativePath,
+                originalName: staged.originalName,
+                mimeType: staged.mimeType,
+                sizeBytes: staged.sizeBytes,
+                width: staged.width,
+                height: staged.height,
+                caption: '',
+                sortOrder: _images.length,
+              ),
+            );
+            _imageCaptionControllers.add(captionCtrl);
+          });
+        } catch (e) {
+          errors.add('${item.name}: $e');
+        }
+      }
+
+      if (errors.isNotEmpty && mounted && !_isDisposed) {
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Không thể thêm một số ảnh'),
+            content: Text(errors.join('\n')),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Đóng'),
+              ),
+            ],
+          ),
+        );
+      }
+    } finally {
+      if (mounted && !_isDisposed) {
+        setState(() => _isImportingImages = false);
+      } else {
+        _isImportingImages = false;
+      }
     }
   }
 
@@ -673,8 +734,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
     final stillUsed = _images.any((i) => i.assetId == removed.assetId);
     if (!stillUsed && _newlyStagedAssetIds.contains(removed.assetId)) {
       _newlyStagedAssetIds.remove(removed.assetId);
-      await widget.controller.assetStore
-          .discardStagingAssets([removed.assetId]);
+      await widget.controller.discardDraftAssets([removed.assetId]);
     }
   }
 
@@ -756,10 +816,11 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
       animation: widget.controller,
       builder: (context, _) {
         final saving = widget.controller.isSaving;
+        final busy = saving || _isImportingImages;
         return PopScope(
-          canPop: _savedPopped || (!saving && !_hasUnsavedChanges),
+          canPop: _savedPopped || (!busy && !_hasUnsavedChanges),
           onPopInvokedWithResult: (didPop, _) {
-            if (!didPop && !saving) {
+            if (!didPop && !busy) {
               _handleExit();
             }
           },
@@ -768,7 +829,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
               leading: IconButton(
                 key: const Key('editor_back_button'),
                 icon: const Icon(Icons.arrow_back),
-                onPressed: saving ? null : _handleExit,
+                onPressed: busy ? null : _handleExit,
               ),
               title: Text(
                 widget.existingArticle == null
@@ -780,16 +841,17 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                   key: const Key('preview_article_button'),
                   tooltip: 'Xem trước',
                   icon: const Icon(Icons.visibility_outlined),
-                  onPressed: saving ? null : _openPreview,
+                  onPressed: busy ? null : _openPreview,
                 ),
                 TextButton(
                   key: const Key('save_draft_button'),
-                  onPressed: saving ? null : () => _saveArticle(forceDraft: true),
+                  onPressed: busy ? null : () => _saveArticle(forceDraft: true),
                   child: const Text('Lưu nháp'),
                 ),
                 FilledButton(
                   key: const Key('save_article_button'),
-                  onPressed: saving ? null : () => _saveArticle(forceDraft: false),
+                  onPressed:
+                      busy ? null : () => _saveArticle(forceDraft: false),
                   child: const Text('Lưu bài'),
                 ),
                 const SizedBox(width: 8.0),
@@ -1415,12 +1477,26 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                     ),
                     FilledButton.tonalIcon(
                       key: const Key('add_image_button'),
-                      onPressed: saving ? null : _pickImages,
-                      icon: const Icon(Icons.add_photo_alternate_outlined),
-                      label: const Text('Thêm ảnh'),
+                      onPressed: busy ? null : _pickImages,
+                      icon: _isImportingImages
+                          ? const SizedBox(
+                              width: 16.0,
+                              height: 16.0,
+                              child: CircularProgressIndicator(strokeWidth: 2.0),
+                            )
+                          : const Icon(Icons.add_photo_alternate_outlined),
+                      label: Text(
+                        _isImportingImages ? 'Đang xử lý...' : 'Thêm ảnh',
+                      ),
                     ),
                   ],
                 ),
+                if (_isImportingImages) ...[
+                  const SizedBox(height: 8.0),
+                  const LinearProgressIndicator(
+                    key: Key('importing_images_banner'),
+                  ),
+                ],
                 const SizedBox(height: 8.0),
                 for (var i = 0; i < _images.length; i++)
                   Card(
@@ -1442,7 +1518,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                                 key: Key('image_up_$i'),
                                 tooltip: 'Đưa lên',
                                 icon: const Icon(Icons.arrow_upward),
-                                onPressed: (saving || i == 0)
+                                onPressed: (busy || i == 0)
                                     ? null
                                     : () => _moveImage(i, -1),
                               ),
@@ -1451,7 +1527,7 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                                 tooltip: 'Đưa xuống',
                                 icon: const Icon(Icons.arrow_downward),
                                 onPressed:
-                                    (saving || i == _images.length - 1)
+                                    (busy || i == _images.length - 1)
                                         ? null
                                         : () => _moveImage(i, 1),
                               ),
@@ -1460,22 +1536,18 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                                 tooltip: 'Xóa ảnh',
                                 icon: const Icon(Icons.delete_outline),
                                 onPressed:
-                                    saving ? null : () => _removeImage(i),
+                                    busy ? null : () => _removeImage(i),
                               ),
                             ],
                           ),
                           Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              FutureBuilder<File?>(
-                                future: widget.controller.assetStore
-                                    .findExistingFile(
-                                  assetId: _images[i].assetId,
-                                  relativePath: _images[i].relativePath,
-                                ),
+                              FutureBuilder<Uint8List?>(
+                                future: _thumbBytesFor(_images[i]),
                                 builder: (context, snapshot) {
-                                  final file = snapshot.data;
-                                  if (file == null) {
+                                  final bytes = snapshot.data;
+                                  if (bytes == null) {
                                     return Container(
                                       width: 88.0,
                                       height: 88.0,
@@ -1490,8 +1562,8 @@ class _ArticleEditorScreenState extends State<ArticleEditorScreen> {
                                   }
                                   return ClipRRect(
                                     borderRadius: BorderRadius.circular(6.0),
-                                    child: Image.file(
-                                      file,
+                                    child: Image.memory(
+                                      bytes,
                                       width: 88.0,
                                       height: 88.0,
                                       cacheWidth: 160,

@@ -40,16 +40,19 @@ class _ArticleThumbnailState extends State<ArticleThumbnail> {
   @override
   void didUpdateWidget(covariant ArticleThumbnail oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final oldFirst = oldWidget.article.images.isNotEmpty
-        ? oldWidget.article.images.first.assetId
-        : null;
-    final newFirst = widget.article.images.isNotEmpty
-        ? widget.article.images.first.assetId
-        : null;
-    if (widget.article.diagrams.isEmpty && oldFirst != newFirst) {
-      _syncImageFuture();
-    } else if (widget.article.diagrams.isNotEmpty) {
+    if (widget.article.diagrams.isNotEmpty || widget.article.images.isEmpty) {
       _imageFileFuture = null;
+      return;
+    }
+    final hadDiagrams = oldWidget.article.diagrams.isNotEmpty;
+    final oldFirst =
+        oldWidget.article.images.isNotEmpty ? oldWidget.article.images.first : null;
+    final newFirst = widget.article.images.first;
+    if (hadDiagrams ||
+        _imageFileFuture == null ||
+        oldFirst?.assetId != newFirst.assetId ||
+        oldFirst?.relativePath != newFirst.relativePath) {
+      _syncImageFuture();
     }
   }
 

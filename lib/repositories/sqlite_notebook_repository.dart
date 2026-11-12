@@ -1477,6 +1477,28 @@ class SqliteNotebookRepository implements NotebookRepository {
   }
 
   @override
+  Future<void> discardUncommittedDraftAssets(Iterable<String> assetIds) {
+    final ids = assetIds.where((id) => id.trim().isNotEmpty).toSet();
+    if (ids.isEmpty) return Future<void>.value();
+    return _serializedWrite(() async {
+      await _assetStore.discardStagingAssets(ids);
+      await initialize();
+      final db = _db;
+      if (db == null || !db.isOpen) return;
+      for (final assetId in ids) {
+        final refRows = await db.rawQuery(
+          'SELECT COUNT(*) AS cnt FROM article_images WHERE asset_id = ?',
+          [assetId],
+        );
+        final refCount = (refRows.first['cnt'] as int?) ?? 0;
+        if (refCount == 0) {
+          await _assetStore.deleteCommittedAssetById(assetId);
+        }
+      }
+    });
+  }
+
+  @override
   Future<void> close() async {
     await _writeQueue.catchError((_) {});
     final db = _db;

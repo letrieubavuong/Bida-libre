@@ -75,5 +75,9 @@ abstract class NotebookRepository {
 
   List<String> suggestTags(String query);
 
+  /// Dọn tệp staging và các tệp mới đã promote nhưng chưa được SQLite tham chiếu
+  /// khi người dùng hủy bản nháp (sau khi kiểm tra ref-count trong DB).
+  Future<void> discardUncommittedDraftAssets(Iterable<String> assetIds);
+
   Future<void> close();
 }

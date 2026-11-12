@@ -224,13 +224,13 @@ class ArticleAssetStore {
     final idSet = assetIds.toSet();
     if (idSet.isEmpty) return;
     final staging = await _stagingDir();
-    if (!await staging.exists()) return;
-    await for (final entity in staging.list()) {
+    if (!staging.existsSync()) return;
+    for (final entity in staging.listSync()) {
       if (entity is File) {
         final base = p.basenameWithoutExtension(entity.path);
         if (idSet.contains(base)) {
           try {
-            await entity.delete();
+            entity.deleteSync();
           } catch (_) {}
         }
       }
@@ -242,6 +242,26 @@ class ArticleAssetStore {
     final file = await resolveRelativePath(relativePath);
     if (await file.exists()) {
       await file.delete();
+    }
+  }
+
+  /// Xóa tệp đã commit theo `assetId` trong `article_assets/`
+  /// (chỉ gọi sau khi SQLite xác nhận refCount == 0).
+  Future<void> deleteCommittedAssetById(String assetId) async {
+    if (assetId.trim().isEmpty) return;
+    final committed = await _committedDir();
+    if (!committed.existsSync()) return;
+    for (final entity in committed.listSync()) {
+      if (entity is File) {
+        final base = p.basenameWithoutExtension(entity.path);
+        if (base == assetId) {
+          try {
+            if (entity.existsSync()) entity.deleteSync();
+          } catch (_) {
+            // Bỏ qua; cleanupOrphanedAssets sẽ dọn lại ở lần sau.
+          }
+        }
+      }
     }
   }
 
