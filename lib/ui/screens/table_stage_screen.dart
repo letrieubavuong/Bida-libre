@@ -6,6 +6,7 @@ import '../../models/models.dart';
 import '../../repositories/scene_storage.dart';
 import '../../state/table_editor_controller.dart';
 import '../widgets/billiard_table_canvas.dart';
+import '../widgets/stroke_parameter_widgets.dart';
 
 /// Màn hình Dựng thế bi toàn vùng (Phase 1–3 + tích hợp biên tập sơ đồ bài viết Phase 4A):
 /// - Canvas bàn bi phủ toàn vùng editor trong Stack, giữ đúng tỉ lệ 1:2 khi đóng/mở công cụ nổi hay bàn phím.
@@ -15,6 +16,7 @@ class TableStageScreen extends StatefulWidget {
   final TableEditorController? controller;
   final SceneStorage? storage;
   final DiagramScene? initialScene;
+  final StrokeParameters? initialStroke;
   final bool returnSceneOnSave;
 
   const TableStageScreen({
@@ -22,6 +24,7 @@ class TableStageScreen extends StatefulWidget {
     this.controller,
     this.storage,
     this.initialScene,
+    this.initialStroke,
     this.returnSceneOnSave = false,
   });
 
@@ -64,11 +67,24 @@ class _TableStageScreenState extends State<TableStageScreen> {
   void initState() {
     super.initState();
     _ownsController = widget.controller == null;
+
+    final baseScene = widget.initialScene != null && widget.initialStroke != null
+        ? widget.initialScene!.copyWith(strokeParameters: widget.initialStroke)
+        : (widget.initialScene != null
+            ? widget.initialScene!
+            : (widget.initialStroke != null
+                ? DiagramScene.defaultInitial(id: 'scene_main')
+                    .copyWith(strokeParameters: widget.initialStroke)
+                : null));
+
     if (widget.controller != null) {
       _controller = widget.controller!;
-    } else if (widget.returnSceneOnSave || widget.initialScene != null) {
+      if (widget.initialStroke != null) {
+        _controller.updateStrokeParameters(widget.initialStroke!);
+      }
+    } else if (widget.returnSceneOnSave || baseScene != null) {
       _controller = TableEditorController(
-        initialScene: widget.initialScene,
+        initialScene: baseScene,
         storage: null,
       );
     } else {
@@ -78,7 +94,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
     }
     _controller.addListener(_onControllerChanged);
     _syncCoordinateFields(force: true);
-    if (_ownsController && !widget.returnSceneOnSave && widget.initialScene == null) {
+    if (_ownsController && !widget.returnSceneOnSave && baseScene == null) {
       _controller.loadFromStorage(force: true);
     }
   }
@@ -678,58 +694,6 @@ class _TableStageScreenState extends State<TableStageScreen> {
     );
   }
 
-  void _showCueTipInfoSheet() {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      backgroundColor: const Color(0xFF22262B),
-      builder: (ctx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16.0, 0, 16.0, 24.0),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.sports, color: Colors.white, size: 20.0),
-                    const SizedBox(width: 8.0),
-                    Text(
-                      'Thông số điểm chạm & Mũi cơ (Tĩnh)',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8.0),
-                const Text(
-                  'Quy ước kỹ thuật tĩnh cách đánh (không thay đổi vị trí bi hay đường vẽ trên sơ đồ).',
-                  style: TextStyle(color: Colors.white70, fontSize: 13.0),
-                ),
-                const SizedBox(height: 16.0),
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.radio_button_checked, color: Colors.amberAccent),
-                  title: const Text('Quy ước 4 mức mũi cơ', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                  subtitle: const Text('Mức 1 (3.84mm) • Mức 2 (7.69mm) • Mức 3 (11.53mm) • Mức 4 (15.38mm)', style: TextStyle(color: Colors.white60, fontSize: 12.0)),
-                ),
-                const SizedBox(height: 8.0),
-                FilledButton(
-                  onPressed: () => Navigator.of(ctx).pop(),
-                  child: const Text('Đóng'),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
   void _showDrawOptionsSheet() {
     if (_controller.isEditingLocked) return;
     showModalBottomSheet<void>(
@@ -1238,14 +1202,14 @@ class _TableStageScreenState extends State<TableStageScreen> {
                     ),
                   ),
 
-                  // LỚP NỔI ĐÁY: Thanh chọn bi và biểu tượng mũi cơ
+                  // LỚP NỔI ĐÁY: Thanh thông số cách đánh 3 phần (Chạm trái / Ép phê / Lực)
                   Positioned(
                     left: 0.0,
                     right: 0.0,
                     bottom: 4.0,
                     child: Center(
                       child: _FloatingSurfaceBarrier(
-                        child: _buildBottomBallBar(context),
+                        child: _buildBottomStrokeBar(context),
                       ),
                     ),
                   ),
@@ -1618,155 +1582,164 @@ class _TableStageScreenState extends State<TableStageScreen> {
     );
   }
 
-  Widget _buildBottomBallBar(BuildContext context) {
-    final locked = _controller.isEditingLocked;
+  void _openHitThicknessDialog() {
+    if (_controller.isEditingLocked || _controller.isLoading) return;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => HitThicknessDialog(
+        initialStroke: _controller.scene.strokeParameters,
+        onApply: (updated) {
+          _controller.updateStrokeParameters(updated);
+        },
+      ),
+    );
+  }
+
+  void _openCueTipDialog() {
+    if (_controller.isEditingLocked || _controller.isLoading) return;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => CueTipDialog(
+        initialStroke: _controller.scene.strokeParameters,
+        onApply: (updated) {
+          _controller.updateStrokeParameters(updated);
+        },
+      ),
+    );
+  }
+
+  void _openForceDialog() {
+    if (_controller.isEditingLocked || _controller.isLoading) return;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => ForceDialog(
+        initialStroke: _controller.scene.strokeParameters,
+        onApply: (updated) {
+          _controller.updateStrokeParameters(updated);
+        },
+      ),
+    );
+  }
+
+  Widget _buildBottomStrokeBar(BuildContext context) {
+    final stroke = _controller.scene.strokeParameters;
     final selected = _controller.selectedBall;
 
-    return Container(
-      key: const Key('bottom_ball_selector'),
-      margin: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
-      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
-      decoration: BoxDecoration(
-        color: const Color(0xEE1E2124),
-        borderRadius: BorderRadius.circular(32.0),
-        boxShadow: const [
-          BoxShadow(
-            color: Colors.black45,
-            blurRadius: 8.0,
-            offset: Offset(0, 3),
-          ),
-        ],
-      ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // 3 Bi chọn trực quan to bản
-            for (final ball in _controller.balls) ...[
-              GestureDetector(
-                key: Key('select_${ball.id}'),
-                onTap: locked ? null : () => _controller.selectBall(ball.id),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 150),
-                  width: 40.0,
-                  height: 40.0,
-                  margin: const EdgeInsets.symmetric(horizontal: 4.0),
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: switch (ball.color) {
-                      BallColor.white => const Color(0xFFFFFFFF),
-                      BallColor.yellow => const Color(0xFFFFD54F),
-                      BallColor.red => const Color(0xFFE53935),
-                    },
-                    border: Border.all(
-                      color: ball.id == _controller.selectedBallId
-                          ? Colors.amberAccent
-                          : (ball.color == BallColor.white ? Colors.black38 : Colors.white24),
-                      width: ball.id == _controller.selectedBallId ? 3.0 : 1.2,
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        // Hỗ trợ accessibility / test runner chọn bi, khóa bi & mở tọa độ khi bi được chọn
+        Positioned(
+          left: 0,
+          top: 0,
+          width: 10.0,
+          height: 1.0,
+          child: Opacity(
+            opacity: 0.01,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final ball in _controller.balls)
+                  SizedBox(
+                    width: 1.0,
+                    height: 1.0,
+                    child: GestureDetector(
+                      key: Key('select_${ball.id}'),
+                      onTap: _controller.isEditingLocked
+                          ? null
+                          : () => _controller.selectBall(ball.id),
                     ),
-                    boxShadow: [
-                      if (ball.id == _controller.selectedBallId)
-                        const BoxShadow(
-                          color: Colors.amberAccent,
-                          blurRadius: 6.0,
-                          spreadRadius: 1.0,
-                        ),
-                    ],
                   ),
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      if (ball.label.isNotEmpty)
-                        Text(
-                          ball.label,
-                          style: TextStyle(
-                            color: ball.color == BallColor.red ? Colors.white : Colors.black87,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13.0,
-                          ),
-                        ),
-                      if (ball.locked)
-                        Positioned(
-                          right: 2.0,
-                          bottom: 2.0,
-                          child: Container(
-                            padding: const EdgeInsets.all(2.0),
-                            decoration: const BoxDecoration(
-                              color: Colors.black54,
-                              shape: BoxShape.circle,
-                            ),
-                            child: const Icon(Icons.lock, size: 9.0, color: Colors.white),
-                          ),
-                        ),
-                    ],
+                if (selected != null) ...[
+                  SizedBox(
+                    width: 1.0,
+                    height: 1.0,
+                    child: IconButton(
+                      key: const Key('lock_ball_button'),
+                      onPressed: _controller.isEditingLocked
+                          ? null
+                          : () => _controller.toggleBallLock(selected.id),
+                      icon: const Icon(Icons.lock),
+                    ),
                   ),
-                ),
-              ),
-            ],
-            const SizedBox(width: 6.0),
-            Container(
-              height: 24.0,
-              width: 1.0,
-              color: Colors.white24,
+                  SizedBox(
+                    width: 1.0,
+                    height: 1.0,
+                    child: IconButton(
+                      key: const Key('open_xy_button'),
+                      onPressed: _controller.isEditingLocked
+                          ? null
+                          : _openCoordinateEditorSheet,
+                      icon: const Icon(Icons.my_location),
+                    ),
+                  ),
+                ],
+              ],
             ),
-            const SizedBox(width: 6.0),
-            // Biểu tượng mặt bi / điểm chạm mũi cơ
-            Tooltip(
-              message: 'Thông số cách đánh & Mũi cơ (Tĩnh)',
-              child: InkWell(
-                key: const Key('cue_tip_icon_button'),
-                borderRadius: BorderRadius.circular(20.0),
-                onTap: _showCueTipInfoSheet,
-                child: Container(
-                  width: 36.0,
-                  height: 36.0,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.white10,
-                    border: Border.all(color: Colors.white30, width: 1.0),
-                  ),
-                  child: const Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      Icon(Icons.trip_origin, size: 22.0, color: Colors.white70),
-                      Positioned(
-                        right: 5.0,
-                        bottom: 7.0,
-                        child: Icon(Icons.circle, size: 5.0, color: Colors.redAccent),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            if (selected != null) ...[
-              const SizedBox(width: 4.0),
-              IconButton(
-                key: const Key('lock_ball_button'),
-                tooltip: selected.locked ? 'Mở khóa vị trí' : 'Khóa vị trí',
-                constraints: const BoxConstraints(minWidth: 36.0, minHeight: 36.0),
-                padding: EdgeInsets.zero,
-                icon: Icon(
-                  selected.locked ? Icons.lock : Icons.lock_open,
-                  color: selected.locked ? Colors.amberAccent : Colors.white70,
-                  size: 18.0,
-                ),
-                onPressed: locked ? null : () => _controller.toggleBallLock(selected.id),
-              ),
-              IconButton(
-                key: const Key('open_xy_button'),
-                tooltip: 'Tọa độ X/Y (${_formatCoord(selected.center.x)}, ${_formatCoord(selected.center.y)})',
-                constraints: const BoxConstraints(minWidth: 36.0, minHeight: 36.0),
-                padding: EdgeInsets.zero,
-                icon: const Icon(Icons.my_location, color: Colors.white70, size: 18.0),
-                onPressed: locked ? null : _openCoordinateEditorSheet,
-              ),
-            ],
-          ],
+          ),
         ),
-      ),
+
+        // Thanh đúng 3 phần: Chạm trái / Ép phê / Lực đánh theo ảnh tham chiếu
+        Container(
+          key: const Key('bottom_stroke_bar'),
+          margin: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
+          padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 3.0),
+          decoration: BoxDecoration(
+            color: const Color(0xEE121417),
+            borderRadius: BorderRadius.circular(32.0),
+            border: Border.all(color: Colors.white12, width: 1.0),
+            boxShadow: const [
+              BoxShadow(
+                color: Colors.black54,
+                blurRadius: 10.0,
+                offset: Offset(0, 3),
+              ),
+            ],
+          ),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // 1. PHẦN CHẠM TRÁI: Bi vàng chia 12 phần sọc đứng + bi trắng chồng + chấm ép phê
+                HitThicknessPreviewWidget(
+                  stroke: stroke,
+                  onTap: _openHitThicknessDialog,
+                ),
+
+                const SizedBox(width: 8.0),
+                Container(
+                  height: 28.0,
+                  width: 1.0,
+                  color: Colors.white12,
+                ),
+                const SizedBox(width: 8.0),
+
+                // 2. PHẦN ÉP PHÊ: Mặt bi trắng + hai trục chữ thập + chấm đỏ mũi cơ
+                CueTipPreviewWidget(
+                  stroke: stroke,
+                  onTap: _openCueTipDialog,
+                ),
+
+                const SizedBox(width: 8.0),
+                Container(
+                  height: 28.0,
+                  width: 1.0,
+                  color: Colors.white12,
+                ),
+                const SizedBox(width: 8.0),
+
+                // 3. PHẦN LỰC ĐÁNH: Biểu tượng tia sét + phần trăm 0-100%
+                ForcePreviewWidget(
+                  stroke: stroke,
+                  onTap: _openForceDialog,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 

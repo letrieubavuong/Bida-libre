@@ -1,5 +1,6 @@
 /// Kiểu độ dày chạm bi mục tiêu (tĩnh, hoàn toàn không giải cơ học).
 enum HitThicknessMode {
+  twelfths('twelfths', 'Phần mười hai (k/12)'),
   eighths('eighths', 'Phần tám (k/8)'),
   oneThird('one_third', '1/3 bi'),
   twoThirds('two_thirds', '2/3 bi'),
@@ -13,7 +14,7 @@ enum HitThicknessMode {
   static HitThicknessMode fromKey(String key) {
     return HitThicknessMode.values.firstWhere(
       (e) => e.storageKey == key,
-      orElse: () => HitThicknessMode.eighths,
+      orElse: () => HitThicknessMode.twelfths,
     );
   }
 }
@@ -67,11 +68,12 @@ class CueTipConvention {
   }
 }
 
-/// Thông số cách đánh hoàn toàn tĩnh gắn với bài viết (không thay đổi bi hoặc đường).
+/// Thông số cách đánh hoàn toàn tĩnh gắn với bài viết hoặc sơ đồ (không thay đổi bi hoặc đường).
 class StrokeParameters {
   final String cueBallId;
   final HitThicknessMode thicknessMode;
-  final int eighthCount; // 1..8 khi dùng Phần tám
+  final int twelfthCount; // 1..12 khi dùng Phần mười hai (quy ước 12 phần)
+  final int eighthCount; // 1..8 khi dùng Phần tám (bảo toàn dữ liệu cũ)
   final double? exactThicknessValue; // Giá trị chính xác khi chọn exact
   final bool isFullFace; // Tràn mặt: bật/tắt vẫn giữ thicknessMode & hitSide trước đó
   final HitSide hitSide;
@@ -79,12 +81,14 @@ class StrokeParameters {
   final double tipZMm; // + trên, - dưới
   final double tipDiameterMm; // 11.5, 11.75, 12.0 mm
   final String tipNote;
+  final int? forcePercent; // 0..100%
   final String forceText;
   final String strokeStyleText;
 
   const StrokeParameters({
     this.cueBallId = 'ball_white',
-    this.thicknessMode = HitThicknessMode.eighths,
+    this.thicknessMode = HitThicknessMode.twelfths,
+    this.twelfthCount = 6,
     this.eighthCount = 4,
     this.exactThicknessValue,
     this.isFullFace = false,
@@ -93,11 +97,29 @@ class StrokeParameters {
     this.tipZMm = 0.0,
     this.tipDiameterMm = 12.0,
     this.tipNote = '',
+    this.forcePercent = 50,
     this.forceText = '',
     this.strokeStyleText = '',
   });
 
   const StrokeParameters.defaults() : this();
+
+  /// Tỷ lệ độ dày tiếp xúc hữu hiệu [0..1] phục vụ vẽ minh họa bi tiếp xúc.
+  double get effectiveThicknessFraction {
+    if (isFullFace) return 1.0;
+    switch (thicknessMode) {
+      case HitThicknessMode.twelfths:
+        return (twelfthCount / 12.0).clamp(0.0, 1.0);
+      case HitThicknessMode.eighths:
+        return (eighthCount / 8.0).clamp(0.0, 1.0);
+      case HitThicknessMode.oneThird:
+        return 1.0 / 3.0;
+      case HitThicknessMode.twoThirds:
+        return 2.0 / 3.0;
+      case HitThicknessMode.exact:
+        return (exactThicknessValue ?? 1.0).clamp(0.0, 1.0);
+    }
+  }
 
   String get thicknessSummary {
     if (isFullFace) {
@@ -108,6 +130,8 @@ class StrokeParameters {
 
   String _baseThicknessLabel() {
     switch (thicknessMode) {
+      case HitThicknessMode.twelfths:
+        return '$twelfthCount/12';
       case HitThicknessMode.eighths:
         return '$eighthCount/8';
       case HitThicknessMode.oneThird:
@@ -119,6 +143,17 @@ class StrokeParameters {
             ? exactThicknessValue!.toStringAsFixed(3).replaceFirst(RegExp(r'\.?0+$'), '')
             : 'Chính xác';
     }
+  }
+
+  /// Hiển thị giá trị lực (ưu tiên forcePercent 0-100%, bảo toàn forceText cũ).
+  String get forceDisplay {
+    if (forcePercent != null) {
+      return '$forcePercent%';
+    }
+    if (forceText.trim().isNotEmpty) {
+      return forceText.trim();
+    }
+    return '50%';
   }
 
   String get horizontalTipLabel => CueTipConvention.describeAxisOffset(
@@ -144,8 +179,14 @@ class StrokeParameters {
     if (!tipDiameterMm.isFinite || tipDiameterMm <= 0) {
       return 'Đường kính đầu cơ phải là số hữu hạn lớn hơn 0.';
     }
+    if (twelfthCount < 1 || twelfthCount > 12) {
+      return 'Độ dày phần mười hai phải nằm trong khoảng 1 đến 12.';
+    }
     if (eighthCount < 1 || eighthCount > 8) {
       return 'Độ dày phần tám phải nằm trong khoảng 1 đến 8.';
+    }
+    if (forcePercent != null && (forcePercent! < 0 || forcePercent! > 100)) {
+      return 'Lực đánh phải nằm trong khoảng từ 0% đến 100%.';
     }
     if (thicknessMode == HitThicknessMode.exact) {
       if (exactThicknessValue == null || !exactThicknessValue!.isFinite) {
@@ -167,6 +208,7 @@ class StrokeParameters {
   StrokeParameters copyWith({
     String? cueBallId,
     HitThicknessMode? thicknessMode,
+    int? twelfthCount,
     int? eighthCount,
     double? exactThicknessValue,
     bool clearExactThickness = false,
@@ -176,12 +218,15 @@ class StrokeParameters {
     double? tipZMm,
     double? tipDiameterMm,
     String? tipNote,
+    int? forcePercent,
+    bool clearForcePercent = false,
     String? forceText,
     String? strokeStyleText,
   }) {
     return StrokeParameters(
       cueBallId: cueBallId ?? this.cueBallId,
       thicknessMode: thicknessMode ?? this.thicknessMode,
+      twelfthCount: twelfthCount ?? this.twelfthCount,
       eighthCount: eighthCount ?? this.eighthCount,
       exactThicknessValue: clearExactThickness
           ? null
@@ -192,6 +237,9 @@ class StrokeParameters {
       tipZMm: tipZMm ?? this.tipZMm,
       tipDiameterMm: tipDiameterMm ?? this.tipDiameterMm,
       tipNote: tipNote ?? this.tipNote,
+      forcePercent: clearForcePercent
+          ? null
+          : (forcePercent ?? this.forcePercent),
       forceText: forceText ?? this.forceText,
       strokeStyleText: strokeStyleText ?? this.strokeStyleText,
     );
@@ -200,6 +248,7 @@ class StrokeParameters {
   Map<String, dynamic> toJson() => {
         'cueBallId': cueBallId,
         'thicknessMode': thicknessMode.storageKey,
+        'twelfthCount': twelfthCount,
         'eighthCount': eighthCount,
         if (exactThicknessValue != null)
           'exactThicknessValue': exactThicknessValue,
@@ -209,11 +258,14 @@ class StrokeParameters {
         'tipZMm': tipZMm,
         'tipDiameterMm': tipDiameterMm,
         'tipNote': tipNote,
+        if (forcePercent != null) 'forcePercent': forcePercent,
         'forceText': forceText,
         'strokeStyleText': strokeStyleText,
       };
 
   factory StrokeParameters.fromJson(Map<String, dynamic> json) {
+    final rawTwelfth = (json['twelfthCount'] as num?)?.toInt() ?? 6;
+    final twelfthCount = rawTwelfth.clamp(1, 12);
     final rawEighth = (json['eighthCount'] as num?)?.toInt() ?? 4;
     final eighthCount = rawEighth.clamp(1, 8);
     final rawExact = (json['exactThicknessValue'] as num?)?.toDouble();
@@ -221,11 +273,22 @@ class StrokeParameters {
     final rawZ = (json['tipZMm'] as num?)?.toDouble() ?? 0.0;
     final rawDia = (json['tipDiameterMm'] as num?)?.toDouble() ?? 12.0;
 
+    int? parsedForcePercent;
+    if (json['forcePercent'] is num) {
+      parsedForcePercent = (json['forcePercent'] as num).toInt().clamp(0, 100);
+    } else if (json['forceText'] is String) {
+      final match = RegExp(r'^(\d{1,3})\s*%$').firstMatch((json['forceText'] as String).trim());
+      if (match != null) {
+        parsedForcePercent = int.tryParse(match.group(1)!)?.clamp(0, 100);
+      }
+    }
+
     return StrokeParameters(
       cueBallId: (json['cueBallId'] as String?) ?? 'ball_white',
       thicknessMode: HitThicknessMode.fromKey(
-        (json['thicknessMode'] as String?) ?? 'eighths',
+        (json['thicknessMode'] as String?) ?? 'twelfths',
       ),
+      twelfthCount: twelfthCount,
       eighthCount: eighthCount,
       exactThicknessValue:
           (rawExact != null && rawExact.isFinite) ? rawExact : null,
@@ -235,6 +298,7 @@ class StrokeParameters {
       tipZMm: rawZ.isFinite ? rawZ : 0.0,
       tipDiameterMm: (rawDia.isFinite && rawDia > 0) ? rawDia : 12.0,
       tipNote: (json['tipNote'] as String?) ?? '',
+      forcePercent: parsedForcePercent ?? (json.containsKey('forceText') && (json['forceText'] as String).isNotEmpty ? null : 50),
       forceText: (json['forceText'] as String?) ?? '',
       strokeStyleText: (json['strokeStyleText'] as String?) ?? '',
     );
@@ -247,6 +311,7 @@ class StrokeParameters {
           runtimeType == other.runtimeType &&
           cueBallId == other.cueBallId &&
           thicknessMode == other.thicknessMode &&
+          twelfthCount == other.twelfthCount &&
           eighthCount == other.eighthCount &&
           exactThicknessValue == other.exactThicknessValue &&
           isFullFace == other.isFullFace &&
@@ -255,6 +320,7 @@ class StrokeParameters {
           tipZMm == other.tipZMm &&
           tipDiameterMm == other.tipDiameterMm &&
           tipNote == other.tipNote &&
+          forcePercent == other.forcePercent &&
           forceText == other.forceText &&
           strokeStyleText == other.strokeStyleText;
 
@@ -262,6 +328,7 @@ class StrokeParameters {
   int get hashCode => Object.hash(
         cueBallId,
         thicknessMode,
+        twelfthCount,
         eighthCount,
         exactThicknessValue,
         isFullFace,
@@ -270,6 +337,7 @@ class StrokeParameters {
         tipZMm,
         tipDiameterMm,
         tipNote,
+        forcePercent,
         forceText,
         strokeStyleText,
       );

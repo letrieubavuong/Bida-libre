@@ -1,5 +1,6 @@
 import 'dart:math';
 import 'enums.dart';
+import 'stroke_parameters.dart';
 
 /// Điểm 2D trong hệ tọa độ sơ đồ bàn (đơn vị sơ đồ x: 0..188, y: 0..376).
 class DiagramPoint {
@@ -890,6 +891,7 @@ class DiagramScene {
   final List<GuidePath> paths;
   final List<DiagramAnnotation> annotations;
   final SceneViewSettings viewSettings;
+  final StrokeParameters strokeParameters;
   final Map<String, dynamic> extraFields;
 
   DiagramScene({
@@ -901,6 +903,7 @@ class DiagramScene {
     List<GuidePath> paths = const [],
     List<DiagramAnnotation> annotations = const [],
     this.viewSettings = const SceneViewSettings.defaults(),
+    this.strokeParameters = const StrokeParameters.defaults(),
     Map<String, dynamic> extraFields = const {},
   })  : balls = List<Ball>.unmodifiable(balls),
         paths = List<GuidePath>.unmodifiable(paths),
@@ -918,6 +921,8 @@ class DiagramScene {
     List<GuidePath>? paths,
     List<DiagramAnnotation>? annotations,
     SceneViewSettings? viewSettings,
+    StrokeParameters? strokeParameters,
+    Map<String, dynamic>? extraFields,
   }) {
     return DiagramScene(
       id: id ?? this.id,
@@ -928,7 +933,8 @@ class DiagramScene {
       paths: paths ?? this.paths,
       annotations: annotations ?? this.annotations,
       viewSettings: viewSettings ?? this.viewSettings,
-      extraFields: extraFields,
+      strokeParameters: strokeParameters ?? this.strokeParameters,
+      extraFields: extraFields ?? this.extraFields,
     );
   }
 
@@ -946,8 +952,9 @@ class DiagramScene {
   DiagramScene withBallsAndPaths({
     required List<Ball> balls,
     required List<GuidePath> paths,
+    StrokeParameters? strokeParameters,
   }) =>
-      copyWith(balls: balls, paths: paths);
+      copyWith(balls: balls, paths: paths, strokeParameters: strokeParameters);
 
   /// Tạo một scene mặc định có 3 bi (trắng, vàng, đỏ) ở các vị trí mẫu hợp lệ.
   factory DiagramScene.defaultInitial({required String id}) {
@@ -1118,6 +1125,7 @@ class DiagramScene {
         'paths': paths.map((p) => p.toJson()).toList(),
         'annotations': annotations.map((a) => a.toJson()).toList(),
         'viewSettings': viewSettings.toJson(),
+        'strokeParameters': strokeParameters.toJson(),
       };
 
   factory DiagramScene.fromJson(Map<String, dynamic> json) {
@@ -1177,6 +1185,11 @@ class DiagramScene {
               json['viewSettings'] as Map<String, dynamic>,
             )
           : const SceneViewSettings.defaults(),
+      strokeParameters: json['strokeParameters'] is Map<String, dynamic>
+          ? StrokeParameters.fromJson(
+              json['strokeParameters'] as Map<String, dynamic>,
+            )
+          : const StrokeParameters.defaults(),
       extraFields: _extractExtraFields(
         json,
         const {
@@ -1188,6 +1201,7 @@ class DiagramScene {
           'paths',
           'annotations',
           'viewSettings',
+          'strokeParameters',
         },
       ),
     );
@@ -1208,6 +1222,7 @@ class DiagramScene {
         width != other.width ||
         height != other.height ||
         viewSettings != other.viewSettings ||
+        strokeParameters != other.strokeParameters ||
         balls.length != other.balls.length ||
         paths.length != other.paths.length ||
         annotations.length != other.annotations.length ||
@@ -1233,6 +1248,7 @@ class DiagramScene {
         width,
         height,
         viewSettings,
+        strokeParameters,
         Object.hashAll(balls),
         Object.hashAll(paths),
         Object.hashAll(annotations),

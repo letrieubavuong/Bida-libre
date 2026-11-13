@@ -929,5 +929,171 @@ void main() {
       expect(updatedWhiteBall.center.x, inInclusiveRange(updatedWhiteBall.radius, 188.0 - updatedWhiteBall.radius));
       expect(updatedWhiteBall.center.y, inInclusiveRange(updatedWhiteBall.radius, 376.0 - updatedWhiteBall.radius));
     });
+
+    testWidgets(
+        '7. Đính chính Phase 6A: Thanh thông số cách đánh 3 phần (Chạm trái 12 phần, Ép phê, Lực 0-100%)',
+        (tester) async {
+      tester.view.physicalSize = const Size(360, 720); // Màn hình hẹp
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() => tester.view.resetPhysicalSize());
+
+      final initialStroke = const StrokeParameters(
+        thicknessMode: HitThicknessMode.twelfths,
+        twelfthCount: 6,
+        hitSide: HitSide.center,
+        tipXMm: 0.0,
+        tipZMm: 0.0,
+        forcePercent: 50,
+      );
+      final initialScene = DiagramScene.defaultInitial(id: 'scene_test_stroke')
+          .copyWith(strokeParameters: initialStroke);
+      final controller = TableEditorController(initialScene: initialScene);
+      addTearDown(() => controller.dispose());
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TableStageScreen(
+              controller: controller,
+              returnSceneOnSave: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // 1. Kiểm tra sự hiện diện của thanh đáy 3 phần
+      expect(find.byKey(const Key('bottom_stroke_bar')), findsOneWidget);
+      expect(find.byKey(const Key('bottom_hit_thickness_button')), findsOneWidget);
+      expect(find.byKey(const Key('bottom_cue_tip_button')), findsOneWidget);
+      expect(find.byKey(const Key('bottom_force_button')), findsOneWidget);
+
+      // 2. PHẦN CHẠM TRÁI: Mở dialog, điều chỉnh slider 12 phần & má chạm, Hủy vs Áp dụng
+      await tester.tap(find.byKey(const Key('bottom_hit_thickness_button')));
+      await tester.pumpAndSettle();
+
+      // Kiểm tra các thành phần trong dialog Chạm trái
+      expect(find.text('Chạm trái / Độ dày tiếp xúc'), findsOneWidget);
+      expect(find.byKey(const Key('hit_side_left')), findsOneWidget);
+      expect(find.byKey(const Key('hit_side_right')), findsOneWidget);
+      expect(find.byKey(const Key('hit_thickness_twelfths_slider')), findsOneWidget);
+      expect(find.byKey(const Key('hit_thickness_cancel_button')), findsOneWidget);
+      expect(find.byKey(const Key('hit_thickness_apply_button')), findsOneWidget);
+
+      // Chọn má phải và trượt slider sang 9/12
+      await tester.tap(find.byKey(const Key('hit_side_right')));
+      await tester.pumpAndSettle();
+      final sliderFinder = find.byKey(const Key('hit_thickness_twelfths_slider'));
+      await tester.ensureVisible(sliderFinder);
+      await tester.drag(sliderFinder, const Offset(50, 0));
+      await tester.pumpAndSettle();
+
+      // Bấm Hủy -> Không đổi giá trị trong controller
+      await tester.ensureVisible(find.byKey(const Key('hit_thickness_cancel_button')));
+      await tester.tap(find.byKey(const Key('hit_thickness_cancel_button')));
+      await tester.pumpAndSettle();
+      expect(controller.scene.strokeParameters.twelfthCount, 6);
+      expect(controller.scene.strokeParameters.hitSide, HitSide.center);
+
+      // Mở lại, chỉnh sang 9/12 và Má trái -> Áp dụng
+      await tester.tap(find.byKey(const Key('bottom_hit_thickness_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('hit_side_left')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('hit_thickness_twelfths_slider')));
+      await tester.drag(find.byKey(const Key('hit_thickness_twelfths_slider')), const Offset(50, 0));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('hit_thickness_apply_button')));
+      await tester.tap(find.byKey(const Key('hit_thickness_apply_button')));
+      await tester.pumpAndSettle();
+
+      expect(controller.scene.strokeParameters.hitSide, HitSide.left);
+      expect(controller.hasUnsavedChanges, isTrue);
+      expect(controller.canUndo, isTrue);
+
+      // 3. PHẦN ÉP PHÊ: Mở dialog, điều chỉnh mũi cơ, liên kết cập nhật biểu tượng
+      await tester.tap(find.byKey(const Key('bottom_cue_tip_button')));
+      await tester.pumpAndSettle();
+      expect(find.text('Ép phê / Điểm mũi cơ'), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_interactive_ball')), findsOneWidget);
+
+      // Kéo/chạm chấm mũi cơ trên mặt bi
+      final ballCenter1 = tester.getCenter(find.byKey(const Key('cue_tip_interactive_ball')));
+      await tester.tapAt(ballCenter1 + const Offset(25, -20));
+      await tester.pumpAndSettle();
+
+      // Bấm Hủy -> Giữ nguyên tọa độ cũ
+      await tester.tap(find.byKey(const Key('cue_tip_cancel_button')));
+      await tester.pumpAndSettle();
+      expect(controller.scene.strokeParameters.tipXMm, 0.0);
+      expect(controller.scene.strokeParameters.tipZMm, 0.0);
+
+      // Mở lại, chọn điểm lệch tâm và bấm Áp dụng
+      await tester.tap(find.byKey(const Key('bottom_cue_tip_button')));
+      await tester.pumpAndSettle();
+      final ballCenter2 = tester.getCenter(find.byKey(const Key('cue_tip_interactive_ball')));
+      await tester.tapAt(ballCenter2 + const Offset(30, -25));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('cue_tip_apply_button')));
+      await tester.pumpAndSettle();
+
+      // Ép phê được cập nhật, tỷ lệ chạm trái và má chạm KHÔNG bị thay đổi
+      expect(controller.scene.strokeParameters.tipXMm, isNot(0.0));
+      expect(controller.scene.strokeParameters.hitSide, HitSide.left);
+
+      // 4. PHẦN LỰC ĐÁNH: 0..100%, chặn ngoài miền, cập nhật số
+      await tester.tap(find.byKey(const Key('bottom_force_button')));
+      await tester.pumpAndSettle();
+      expect(find.text('Lực đánh'), findsOneWidget);
+      expect(find.byKey(const Key('force_slider')), findsOneWidget);
+      expect(find.byKey(const Key('force_number_input')), findsOneWidget);
+
+      // Thử nhập số ngoài miền (> 100) -> báo lỗi và vô hiệu hóa nút Áp dụng
+      await tester.enterText(find.byKey(const Key('force_number_input')), '150');
+      await tester.pumpAndSettle();
+      expect(find.text('Lực phải nằm trong khoảng từ 0% đến 100%.'), findsOneWidget);
+
+      // Nhập số hợp lệ 75%
+      await tester.enterText(find.byKey(const Key('force_number_input')), '75');
+      await tester.pumpAndSettle();
+      expect(find.text('Lực phải nằm trong khoảng từ 0% đến 100%.'), findsNothing);
+
+      await tester.tap(find.byKey(const Key('force_apply_button')));
+      await tester.pumpAndSettle();
+
+      expect(controller.scene.strokeParameters.forcePercent, 75);
+      expect(controller.scene.strokeParameters.forceDisplay, '75%');
+
+      // 5. Kiểm tra tính năng Undo / Redo cho thông số cách đánh
+      expect(controller.canUndo, isTrue);
+      controller.undo();
+      await tester.pumpAndSettle();
+      // Quay lại lực trước đó
+      expect(controller.scene.strokeParameters.forcePercent, isNot(75));
+
+      controller.redo();
+      await tester.pumpAndSettle();
+      expect(controller.scene.strokeParameters.forcePercent, 75);
+
+      // 6. Kiểm tra bảo toàn dữ liệu cũ (8 phần) không bị âm thầm làm tròn
+      final legacyJson = {
+        'cueBallId': 'ball_white',
+        'thicknessMode': 'eighths',
+        'eighthCount': 3,
+        'hitSide': 'left',
+        'tipXMm': 5.0,
+        'tipZMm': -3.0,
+        'forceText': 'vừa đủ về',
+      };
+      final loadedParams = StrokeParameters.fromJson(legacyJson);
+      expect(loadedParams.thicknessMode, HitThicknessMode.eighths);
+      expect(loadedParams.eighthCount, 3);
+      expect(loadedParams.forceText, 'vừa đủ về');
+      expect(loadedParams.effectiveThicknessFraction, closeTo(3.0 / 8.0, 1e-4));
+      // Không bị ép sang 12 phần khi serialize lại
+      final exportedJson = loadedParams.toJson();
+      expect(exportedJson['thicknessMode'], 'eighths');
+      expect(exportedJson['eighthCount'], 3);
+    });
   });
 }

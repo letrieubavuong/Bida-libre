@@ -1559,6 +1559,16 @@ class TableEditorController extends ChangeNotifier {
     return true;
   }
 
+  /// Cập nhật thông số cách đánh tĩnh (chạm trái 12 phần, ép phê, lực) có hỗ trợ Undo/Redo.
+  bool updateStrokeParameters(StrokeParameters params) {
+    if (isEditingLocked || isDrawingWithDraft || _isLoading) return false;
+    if (_scene.strokeParameters == params) return false;
+    _pushUndoSnapshot(_scene);
+    _scene = _scene.copyWith(strokeParameters: params);
+    _safeNotify();
+    return true;
+  }
+
   bool undo() {
     if (!canUndo) return false;
     _redoStack.add(_scene);
