@@ -222,15 +222,15 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
     _diagrams = List<ArticleDiagram>.from(existing?.diagrams ?? const []);
     _images = List<ArticleImageAttachment>.from(existing?.images ?? const []);
 
-    if (existing?.document != null && existing!.document!.isNotEmpty) {
-      _document = existing.document!;
+    if (existing?.document != null) {
+      _document = existing!.document!;
       _documentMode = true;
     } else if (existing != null) {
-      _document = ArticleDocumentConverter.fromArticle(existing);
+      _document = const ArticleDocument();
       _documentMode = false;
     } else {
       _document = const ArticleDocument();
-      _documentMode = false;
+      _documentMode = true;
     }
 
     _titleCtrl = TextEditingController(text: existing?.title ?? '');
@@ -439,20 +439,11 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
     }
 
     final rawContent = _contentCtrl.text.trim();
-    final effectiveContent = (_documentMode && _document.isNotEmpty && rawContent.isEmpty)
+    final effectiveContent = _documentMode
         ? ArticleDocumentConverter.extractPlainText(_document)
         : rawContent;
 
-    final ArticleDocument? effectiveDoc;
-    if (_documentMode && _document.isNotEmpty) {
-      effectiveDoc = _document;
-    } else if (!_documentMode && (rawContent.isNotEmpty || _goalCtrl.text.trim().isNotEmpty)) {
-      effectiveDoc = _document.isNotEmpty
-          ? _document
-          : null;
-    } else {
-      effectiveDoc = _document.isNotEmpty ? _document : null;
-    }
+    final ArticleDocument? effectiveDoc = _documentMode ? _document : null;
 
     return Article(
       id: _workingArticleId,
@@ -1343,6 +1334,7 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
               _onFormFieldChanged();
             },
             onAddDiagramRequested: () => _scrollToSection(3),
+            onEditDiagramRequested: (idx) => _editDiagram(idx),
             onAddImageRequested: () => _scrollToSection(4),
           ),
         ] else ...[

@@ -610,6 +610,10 @@ void main() {
         await tester.tap(find.byKey(const Key('fab_new_article')));
         await tester.pumpAndSettle();
         expect(find.byType(ArticleEditorScreen), findsOneWidget);
+        if (find.text('Mục cổ điển').evaluate().isNotEmpty) {
+          await tester.tap(find.text('Mục cổ điển'));
+          await tester.pumpAndSettle();
+        }
 
         final editorScroll = find
             .descendant(
@@ -1030,6 +1034,10 @@ void main() {
         await tester.tap(find.byKey(const Key('fab_new_article')));
         await tester.pumpAndSettle();
         expect(find.byType(ArticleEditorScreen), findsOneWidget);
+        if (find.text('Mục cổ điển').evaluate().isNotEmpty) {
+          await tester.tap(find.text('Mục cổ điển'));
+          await tester.pumpAndSettle();
+        }
         await tester.binding.handlePopRoute();
         await tester.pumpAndSettle();
         expect(find.byType(ArticleEditorScreen), findsNothing);
@@ -1144,6 +1152,10 @@ void main() {
 
         await tester.tap(find.byKey(const Key('fab_new_article')));
         await tester.pumpAndSettle();
+        if (find.text('Mục cổ điển').evaluate().isNotEmpty) {
+          await tester.tap(find.text('Mục cổ điển'));
+          await tester.pumpAndSettle();
+        }
 
         // Nhập dữ liệu và thêm 1 bước động, giữ focus ở ô bước
         await tester.enterText(

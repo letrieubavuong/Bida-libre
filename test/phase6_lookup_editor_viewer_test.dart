@@ -478,6 +478,10 @@ void main() {
       // Bấm tab "Nội dung" -> chuyển tới phần 2
       await tester.tap(find.byKey(const Key('editor_section_tab_content')));
       await tester.pumpAndSettle();
+      if (find.text('Mục cổ điển').evaluate().isNotEmpty) {
+        await tester.tap(find.text('Mục cổ điển'));
+        await tester.pumpAndSettle();
+      }
 
       // Điền mục tiêu ở phần 2
       await tester.enterText(

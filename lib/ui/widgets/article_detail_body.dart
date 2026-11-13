@@ -143,7 +143,7 @@ class ArticleDetailBody extends StatelessWidget {
           ),
         ],
         const SizedBox(height: 16.0),
-        if (article.document != null && article.document!.isNotEmpty) ...[
+        if (article.document != null) ...[
           ArticleDocumentRenderer(
             article: article,
             document: article.document!,
@@ -151,6 +151,24 @@ class ArticleDetailBody extends StatelessWidget {
             onLaunchUrl: onLaunchUrl,
             onOpenDiagramViewer: (idx) => _openDiagramViewer(context, idx),
           ),
+          if (article.images.isNotEmpty &&
+              !article.document!.blocks.any((b) => b.type == ArticleBlockType.image)) ...[
+            const SizedBox(height: 16.0),
+            Text(
+              'Ảnh nguồn đính kèm (${article.images.length})',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 8.0),
+            for (var i = 0; i < article.images.length; i++)
+              _ArticleImageCard(
+                key: Key('detail_image_card_$i'),
+                attachment: article.images[i],
+                index: i,
+                assetStore: assetStore,
+              ),
+          ],
         ] else ...[
           if (article.goal.isNotEmpty)
             _DetailSectionCard(

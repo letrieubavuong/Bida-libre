@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../models/models.dart';
 import '../../repositories/article_asset_store.dart';
 import 'article_document_renderer.dart';
+import 'stroke_parameter_widgets.dart';
 
 /// Trình soạn thảo tài liệu bài viết linh hoạt theo kiến trúc khối (Phase 7).
 /// Cho phép thêm, xóa, sắp xếp, di chuyển (kèm di chuyển cả phần con của đề mục),
@@ -13,6 +14,7 @@ class ArticleDocumentEditor extends StatefulWidget {
   final ArticleAssetStore assetStore;
   final void Function(ArticleDocument doc)? onDocumentChanged;
   final VoidCallback? onAddDiagramRequested;
+  final void Function(int index)? onEditDiagramRequested;
   final VoidCallback? onAddImageRequested;
 
   const ArticleDocumentEditor({
@@ -22,6 +24,7 @@ class ArticleDocumentEditor extends StatefulWidget {
     required this.assetStore,
     this.onDocumentChanged,
     this.onAddDiagramRequested,
+    this.onEditDiagramRequested,
     this.onAddImageRequested,
   });
 
@@ -896,7 +899,7 @@ class ArticleDocumentEditorState extends State<ArticleDocumentEditor> {
     );
   }
 
-  void _showImagePickerBlockDialog(BuildContext context, int insertIndex) {
+  void _showImagePickerBlockDialog(BuildContext context, int insertIndex, [ArticleBlock? editing]) {
     if (widget.article.images.isEmpty) {
       showDialog<void>(
         context: context,
@@ -919,11 +922,13 @@ class ArticleDocumentEditorState extends State<ArticleDocumentEditor> {
       return;
     }
 
+    final prevData = editing?.data as ImageBlockData?;
+
     showDialog<void>(
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          title: const Text('Chọn ảnh đính kèm'),
+          title: Text(editing == null ? 'Chọn ảnh đính kèm' : 'Thay đổi ảnh đính kèm'),
           content: SizedBox(
             width: double.maxFinite,
             child: ListView.builder(
@@ -937,18 +942,20 @@ class ArticleDocumentEditorState extends State<ArticleDocumentEditor> {
                   subtitle: Text(img.caption.isNotEmpty ? img.caption : 'Chưa có chú thích'),
                   onTap: () {
                     Navigator.of(ctx).pop();
-                    _insertBlockAt(
-                      insertIndex,
-                      ArticleBlock(
-                        id: _generateBlockId('img'),
-                        type: ArticleBlockType.image,
-                        data: ImageBlockData(
-                          assetId: img.assetId,
-                          caption: img.caption,
-                          displaySize: ImageDisplaySize.large,
-                        ),
+                    final block = ArticleBlock(
+                      id: editing?.id ?? _generateBlockId('img'),
+                      type: ArticleBlockType.image,
+                      data: ImageBlockData(
+                        assetId: img.assetId,
+                        caption: img.caption,
+                        displaySize: prevData?.displaySize ?? ImageDisplaySize.large,
                       ),
                     );
+                    if (editing == null) {
+                      _insertBlockAt(insertIndex, block);
+                    } else {
+                      _updateBlockAt(insertIndex, block);
+                    }
                   },
                 );
               },
@@ -1035,7 +1042,7 @@ class ArticleDocumentEditorState extends State<ArticleDocumentEditor> {
     );
   }
 
-  void _showDiagramPickerBlockDialog(BuildContext context, int insertIndex) {
+  void _showDiagramPickerBlockDialog(BuildContext context, int insertIndex, [ArticleBlock? editing]) {
     if (widget.article.diagrams.isEmpty) {
       showDialog<void>(
         context: context,
@@ -1062,7 +1069,7 @@ class ArticleDocumentEditorState extends State<ArticleDocumentEditor> {
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          title: const Text('Chọn sơ đồ'),
+          title: Text(editing == null ? 'Chọn sơ đồ' : 'Thay đổi sơ đồ'),
           content: SizedBox(
             width: double.maxFinite,
             child: ListView.builder(
@@ -1076,17 +1083,19 @@ class ArticleDocumentEditorState extends State<ArticleDocumentEditor> {
                   subtitle: Text(diag.caption.isNotEmpty ? diag.caption : 'Chưa có chú thích'),
                   onTap: () {
                     Navigator.of(ctx).pop();
-                    _insertBlockAt(
-                      insertIndex,
-                      ArticleBlock(
-                        id: _generateBlockId('diag'),
-                        type: ArticleBlockType.billiardDiagram,
-                        data: BilliardDiagramBlockData(
-                          diagramId: diag.id,
-                          caption: diag.caption,
-                        ),
+                    final block = ArticleBlock(
+                      id: editing?.id ?? _generateBlockId('diag'),
+                      type: ArticleBlockType.billiardDiagram,
+                      data: BilliardDiagramBlockData(
+                        diagramId: diag.id,
+                        caption: diag.caption,
                       ),
                     );
+                    if (editing == null) {
+                      _insertBlockAt(insertIndex, block);
+                    } else {
+                      _updateBlockAt(insertIndex, block);
+                    }
                   },
                 );
               },
@@ -1105,14 +1114,38 @@ class ArticleDocumentEditorState extends State<ArticleDocumentEditor> {
 
   void _showStrokeConfigDialog(BuildContext context, int insertIndex, [ArticleBlock? editing]) {
     final prevData = editing?.data as StrokeParameterBlockData?;
-    var stroke = prevData?.strokeParameters ?? widget.article.strokeParameters;
     String? linkedId = prevData?.linkedDiagramId;
+
+    // Lấy thông số ban đầu
+    StrokeParameters stroke;
+    if (linkedId != null) {
+      final diag = widget.article.diagrams.cast<ArticleDiagram?>().firstWhere(
+            (d) => d?.id == linkedId,
+            orElse: () => null,
+          );
+      stroke = diag?.scene.effectiveStrokeParameters ??
+          prevData?.strokeParameters ??
+          widget.article.strokeParameters;
+    } else {
+      stroke = prevData?.strokeParameters ?? widget.article.strokeParameters;
+    }
 
     showDialog<void>(
       context: context,
       builder: (ctx) {
         return StatefulBuilder(
           builder: (dialogCtx, setDialogState) {
+            final isLinked = linkedId != null;
+            final linkedDiag = isLinked
+                ? widget.article.diagrams.cast<ArticleDiagram?>().firstWhere(
+                    (d) => d?.id == linkedId,
+                    orElse: () => null,
+                  )
+                : null;
+            final currentParams = linkedDiag != null
+                ? linkedDiag.scene.effectiveStrokeParameters
+                : stroke;
+
             return AlertDialog(
               title: Text(editing == null ? 'Thêm Thẻ thông số' : 'Sửa Thẻ thông số'),
               content: SingleChildScrollView(
@@ -1121,7 +1154,11 @@ class ArticleDocumentEditorState extends State<ArticleDocumentEditor> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     if (widget.article.diagrams.isNotEmpty) ...[
-                      const Text('Liên kết với sơ đồ (tùy chọn):'),
+                      const Text(
+                        'Liên kết với sơ đồ (tùy chọn):',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.0),
+                      ),
+                      const SizedBox(height: 4.0),
                       DropdownButton<String?>(
                         value: linkedId,
                         isExpanded: true,
@@ -1130,49 +1167,197 @@ class ArticleDocumentEditorState extends State<ArticleDocumentEditor> {
                           for (var i = 0; i < widget.article.diagrams.length; i++)
                             DropdownMenuItem(
                               value: widget.article.diagrams[i].id,
-                              child: Text('Sơ đồ ${i + 1}'),
+                              child: Text('Sơ đồ ${i + 1}${widget.article.diagrams[i].caption.isNotEmpty ? ' - ${widget.article.diagrams[i].caption}' : ''}'),
                             ),
                         ],
-                        onChanged: (val) => setDialogState(() => linkedId = val),
+                        onChanged: (val) {
+                          setDialogState(() {
+                            if (val == null && linkedId != null) {
+                              // Khi bỏ liên kết, sao chép thông số hiện tại thành bộ độc lập
+                              stroke = currentParams;
+                            }
+                            linkedId = val;
+                          });
+                        },
+                      ),
+                      const Divider(height: 20.0),
+                    ],
+
+                    if (isLinked) ...[
+                      Container(
+                        padding: const EdgeInsets.all(10.0),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.primaryContainer.withAlpha(50),
+                          borderRadius: BorderRadius.circular(8.0),
+                          border: Border.all(
+                            color: Theme.of(context).colorScheme.primary.withAlpha(80),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.link, size: 18.0, color: Theme.of(context).colorScheme.primary),
+                                const SizedBox(width: 6.0),
+                                Expanded(
+                                  child: Text(
+                                    'Đang liên kết: Thông số được đọc trực tiếp từ sơ đồ.',
+                                    style: TextStyle(
+                                      fontSize: 12.0,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context).colorScheme.primary,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6.0),
+                            const Text(
+                              'Để sửa thông số, vui lòng mở chỉnh sửa sơ đồ tương ứng trên bàn vẽ.',
+                              style: TextStyle(fontSize: 12.0),
+                            ),
+                            if (widget.onEditDiagramRequested != null && linkedDiag != null) ...[
+                              const SizedBox(height: 8.0),
+                              OutlinedButton.icon(
+                                icon: const Icon(Icons.edit, size: 16.0),
+                                label: const Text('Mở chỉnh sơ đồ'),
+                                onPressed: () {
+                                  Navigator.of(ctx).pop();
+                                  final diagIndex = widget.article.diagrams.indexOf(linkedDiag);
+                                  if (diagIndex >= 0) {
+                                    widget.onEditDiagramRequested!(diagIndex);
+                                  }
+                                },
+                              ),
+                            ],
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 12.0),
                     ],
-                    Text('Chạm trái: ${stroke.thicknessSummary}'),
-                    const SizedBox(height: 4.0),
+
+                    // 1. Chạm trái
                     Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text('Độ dày 12 phần: '),
-                        DropdownButton<int>(
-                          value: stroke.twelfthCount,
-                          items: List.generate(12, (i) => i + 1).map((k) {
-                            return DropdownMenuItem(value: k, child: Text('$k/12'));
-                          }).toList(),
-                          onChanged: (val) {
-                            if (val != null) {
-                              setDialogState(() {
-                                stroke = stroke.copyWith(twelfthCount: val, isFullFace: false);
-                              });
-                            }
-                          },
-                        ),
+                        Text('1. Chạm trái: ${currentParams.thicknessSummary}',
+                            style: const TextStyle(fontWeight: FontWeight.bold)),
+                        if (!isLinked)
+                          TextButton(
+                            key: const Key('stroke_config_edit_thickness_button'),
+                            onPressed: () {
+                              showDialog<void>(
+                                context: context,
+                                builder: (_) => HitThicknessDialog(
+                                  initialStroke: stroke,
+                                  onApply: (res) {
+                                    setDialogState(() => stroke = res);
+                                  },
+                                ),
+                              );
+                            },
+                            child: const Text('Chi tiết'),
+                          ),
                       ],
                     ),
-                    const SizedBox(height: 8.0),
-                    Text('Mũi cơ: ${stroke.horizontalTipLabel}, ${stroke.verticalTipLabel}'),
-                    const SizedBox(height: 8.0),
-                    Text('Lực: ${stroke.forcePercent}%'),
-                    Slider(
-                      value: (stroke.forcePercent ?? 50).toDouble(),
-                      min: 0,
-                      max: 100,
-                      divisions: 20,
-                      label: '${stroke.forcePercent}%',
-                      onChanged: (v) {
-                        setDialogState(() {
-                          stroke = stroke.copyWith(forcePercent: v.round());
-                        });
-                      },
+                    if (!isLinked) ...[
+                      Row(
+                        children: [
+                          const Text('Độ dày 12 phần: '),
+                          DropdownButton<int>(
+                            value: (stroke.thicknessMode == HitThicknessMode.twelfths && !stroke.isFullFace)
+                                ? stroke.twelfthCount
+                                : null,
+                            hint: Text(stroke.thicknessSummary),
+                            items: List.generate(12, (i) => i + 1).map((k) {
+                              return DropdownMenuItem(value: k, child: Text('$k/12'));
+                            }).toList(),
+                            onChanged: (val) {
+                              if (val != null) {
+                                setDialogState(() {
+                                  // Khi đổi chạm trái sang k/12 phải đặt đúng thicknessMode!
+                                  stroke = stroke.copyWith(
+                                    thicknessMode: HitThicknessMode.twelfths,
+                                    twelfthCount: val,
+                                    isFullFace: false,
+                                  );
+                                });
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 10.0),
+
+                    // 2. Ép phê
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '2. Ép phê: ${currentParams.horizontalTipLabel}, ${currentParams.verticalTipLabel}',
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        if (!isLinked)
+                          TextButton(
+                            key: const Key('stroke_config_edit_cue_tip_button'),
+                            onPressed: () {
+                              showDialog<void>(
+                                context: context,
+                                builder: (_) => CueTipDialog(
+                                  initialStroke: stroke,
+                                  onApply: (res) {
+                                    setDialogState(() => stroke = res);
+                                  },
+                                ),
+                              );
+                            },
+                            child: const Text('Chỉnh ép phê'),
+                          ),
+                      ],
                     ),
+                    const SizedBox(height: 10.0),
+
+                    // 3. Lực
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('3. Lực: ${currentParams.forcePercent}%',
+                            style: const TextStyle(fontWeight: FontWeight.bold)),
+                        if (!isLinked)
+                          TextButton(
+                            key: const Key('stroke_config_edit_force_button'),
+                            onPressed: () {
+                              showDialog<void>(
+                                context: context,
+                                builder: (_) => ForceDialog(
+                                  initialStroke: stroke,
+                                  onApply: (res) {
+                                    setDialogState(() => stroke = res);
+                                  },
+                                ),
+                              );
+                            },
+                            child: const Text('Chi tiết'),
+                          ),
+                      ],
+                    ),
+                    if (!isLinked)
+                      Slider(
+                        value: (stroke.forcePercent ?? 50).toDouble(),
+                        min: 0,
+                        max: 100,
+                        divisions: 20,
+                        label: '${stroke.forcePercent}%',
+                        onChanged: (v) {
+                          setDialogState(() {
+                            stroke = stroke.copyWith(forcePercent: v.round());
+                          });
+                        },
+                      ),
                   ],
                 ),
               ),
@@ -1185,7 +1370,7 @@ class ArticleDocumentEditorState extends State<ArticleDocumentEditor> {
                       id: editing?.id ?? _generateBlockId('stroke'),
                       type: ArticleBlockType.strokeParameter,
                       data: StrokeParameterBlockData(
-                        strokeParameters: stroke,
+                        strokeParameters: isLinked ? currentParams : stroke,
                         linkedDiagramId: linkedId,
                       ),
                     );
@@ -1459,11 +1644,11 @@ class ArticleDocumentEditorState extends State<ArticleDocumentEditor> {
       case ArticleBlockType.orderedList:
         _showListConfigDialog(context, index, isOrdered: true, editing: block);
       case ArticleBlockType.image:
-        _showImagePickerBlockDialog(context, index);
+        _showImagePickerBlockDialog(context, index, block);
       case ArticleBlockType.youtubeVideo:
         _showYouTubeConfigDialog(context, index, block);
       case ArticleBlockType.billiardDiagram:
-        _showDiagramPickerBlockDialog(context, index);
+        _showDiagramPickerBlockDialog(context, index, block);
       case ArticleBlockType.strokeParameter:
         _showStrokeConfigDialog(context, index, block);
       case ArticleBlockType.codeFormula:

@@ -554,6 +554,16 @@ class BilliardDiagramBlockData extends ArticleBlockData {
     this.caption = '',
   });
 
+  BilliardDiagramBlockData copyWith({
+    String? diagramId,
+    String? caption,
+  }) {
+    return BilliardDiagramBlockData(
+      diagramId: diagramId ?? this.diagramId,
+      caption: caption ?? this.caption,
+    );
+  }
+
   @override
   Map<String, dynamic> toJson() => {
         'diagramId': diagramId,
@@ -588,6 +598,19 @@ class StrokeParameterBlockData extends ArticleBlockData {
     this.linkedDiagramId,
     required this.strokeParameters,
   });
+
+  StrokeParameterBlockData copyWith({
+    String? linkedDiagramId,
+    bool clearLinkedDiagramId = false,
+    StrokeParameters? strokeParameters,
+  }) {
+    return StrokeParameterBlockData(
+      linkedDiagramId: clearLinkedDiagramId
+          ? null
+          : (linkedDiagramId ?? this.linkedDiagramId),
+      strokeParameters: strokeParameters ?? this.strokeParameters,
+    );
+  }
 
   @override
   Map<String, dynamic> toJson() => {

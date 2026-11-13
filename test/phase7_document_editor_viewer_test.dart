@@ -9,6 +9,7 @@ import 'package:libre_billiard_notebook/repositories/article_asset_store.dart';
 import 'package:libre_billiard_notebook/repositories/sqlite_notebook_repository.dart';
 import 'package:libre_billiard_notebook/state/notebook_controller.dart';
 import 'package:libre_billiard_notebook/ui/screens/article_detail_screen.dart';
+import 'package:libre_billiard_notebook/ui/widgets/article_detail_body.dart';
 import 'package:libre_billiard_notebook/ui/widgets/article_document_editor.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -614,6 +615,528 @@ void main() {
       expect(editorState.currentDocument.blocks.length, 18);
       expect(updatedDoc, isNotNull);
       expect(editorState.currentDocument.blocks.last.type, ArticleBlockType.divider);
+    });
+
+    testWidgets('1. Bài cổ điển: sửa nội dung -> lưu -> tải lại -> trang đọc hiển thị đúng bản mới', (tester) async {
+      await tester.runAsync(() async {
+        await initRepoAndController();
+        const artId = 'art_classic_1';
+        final classicArt = Article(
+          id: artId,
+          code: 'KT-CLS',
+          kind: ArticleKind.technique,
+          title: 'Bài viết cổ điển ban đầu',
+          summary: 'Tóm tắt bài cổ điển',
+          primaryGroupId: 'tech_foundation',
+          goal: 'Mục tiêu ban đầu',
+          content: 'Nội dung giải thích ban đầu',
+          steps: const ['Bước 1 ban đầu', 'Bước 2 ban đầu'],
+          commonMistakes: 'Lỗi ban đầu',
+          document: null,
+          createdAt: DateTime.now().toUtc(),
+          updatedAt: DateTime.now().toUtc(),
+        );
+
+        await repository.saveArticle(classicArt);
+        final loaded = repository.getArticleById(artId);
+        expect(loaded, isNotNull);
+        expect(loaded!.document, isNull);
+        expect(loaded.content, 'Nội dung giải thích ban đầu');
+
+        // Sửa nội dung ở chế độ cổ điển và lưu lại (không lưu document cũ)
+        final editedClassic = loaded.copyWith(
+          content: 'Nội dung mới đã được cập nhật chuẩn xác',
+          goal: 'Mục tiêu mới đã sửa',
+          clearDocument: true,
+          updatedAt: DateTime.now().toUtc(),
+        );
+        await repository.saveArticle(editedClassic);
+
+        final reloaded = repository.getArticleById(artId);
+        expect(reloaded, isNotNull);
+        expect(reloaded!.document, isNull);
+        expect(reloaded.content, 'Nội dung mới đã được cập nhật chuẩn xác');
+
+        // Render ra ArticleDetailBody kiểm tra nội dung mới hiển thị đúng
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: ArticleDetailBody(
+                article: reloaded,
+                groupName: 'Cơ bản',
+                assetStore: repository.assetStore,
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Nội dung mới đã được cập nhật chuẩn xác'), findsOneWidget);
+        expect(find.text('Mục tiêu mới đã sửa'), findsOneWidget);
+        expect(find.text('Nội dung giải thích ban đầu'), findsNothing);
+      });
+    });
+
+    testWidgets('2. Document: xóa toàn bộ khối -> lưu -> tải lại, nội dung cũ không hồi sinh', (tester) async {
+      await tester.runAsync(() async {
+        await initRepoAndController();
+        const artId = 'art_empty_doc';
+        // Bài viết có document rỗng (người dùng đã chủ động xóa hết khối)
+        // và trường cổ điển rác cũ
+        final emptyDocArt = Article(
+          id: artId,
+          code: 'KT-EMP',
+          kind: ArticleKind.technique,
+          title: 'Bài viết xóa hết khối',
+          summary: 'Tóm tắt bài',
+          primaryGroupId: 'tech_foundation',
+          goal: 'Mục tiêu cũ rác',
+          content: 'Nội dung cũ rác không được hồi sinh',
+          steps: const ['Bước rác'],
+          document: const ArticleDocument(blocks: []),
+          createdAt: DateTime.now().toUtc(),
+          updatedAt: DateTime.now().toUtc(),
+        );
+
+        await repository.saveArticle(emptyDocArt);
+        final reloaded = repository.getArticleById(artId);
+        expect(reloaded, isNotNull);
+        expect(reloaded!.document, isNotNull);
+        expect(reloaded.document!.isEmpty, isTrue);
+
+        // Render ra ArticleDetailBody: không được lôi các trường rác cổ điển ra hiển thị!
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: ArticleDetailBody(
+                article: reloaded,
+                groupName: 'Cơ bản',
+                assetStore: repository.assetStore,
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Nội dung cũ rác không được hồi sinh'), findsNothing);
+        expect(find.text('Mục tiêu cũ rác'), findsNothing);
+        expect(find.text('Bước rác'), findsNothing);
+      });
+    });
+
+    testWidgets('3. Nhân bản bài có sơ đồ và thẻ liên kết -> tải lại -> liên kết đúng & độc lập sơ đồ', (tester) async {
+      await tester.runAsync(() async {
+        await initRepoAndController();
+        const origArtId = 'art_orig_with_diag';
+        const origDiagId = 'diag_orig_123';
+
+        final origDiagram = ArticleDiagram(
+          id: origDiagId,
+          articleId: origArtId,
+          sortOrder: 0,
+          caption: 'Sơ đồ gốc',
+          scene: DiagramScene.defaultInitial(id: origDiagId).copyWith(
+            strokeParameters: const StrokeParameters(
+              thicknessMode: HitThicknessMode.twelfths,
+              twelfthCount: 4,
+              forcePercent: 45,
+            ),
+          ),
+        );
+
+        final origDoc = ArticleDocument(
+          schemaVersion: 1,
+          blocks: [
+            ArticleBlock(
+              id: 'diag_block_orig',
+              type: ArticleBlockType.billiardDiagram,
+              data: const BilliardDiagramBlockData(
+                diagramId: origDiagId,
+                caption: 'Sơ đồ hình bi',
+              ),
+            ),
+            ArticleBlock(
+              id: 'stroke_block_orig',
+              type: ArticleBlockType.strokeParameter,
+              data: const StrokeParameterBlockData(
+                linkedDiagramId: origDiagId,
+                strokeParameters: StrokeParameters(
+                  thicknessMode: HitThicknessMode.twelfths,
+                  twelfthCount: 4,
+                  forcePercent: 45,
+                ),
+              ),
+            ),
+          ],
+        );
+
+        final origArt = Article(
+          id: origArtId,
+          code: 'KT-ORIG',
+          kind: ArticleKind.technique,
+          title: 'Bài viết gốc',
+          summary: 'Tóm tắt bài gốc',
+          primaryGroupId: 'tech_foundation',
+          diagrams: [origDiagram],
+          document: origDoc,
+          createdAt: DateTime.now().toUtc(),
+          updatedAt: DateTime.now().toUtc(),
+        );
+
+        await repository.saveArticle(origArt);
+
+        // Nhân bản bài viết
+        final cloned = await repository.duplicateArticle(origArtId);
+        expect(cloned.id, isNot(origArtId));
+        expect(cloned.diagrams.length, 1);
+        final newDiagId = cloned.diagrams.first.id;
+        expect(newDiagId, isNot(origDiagId));
+
+        // Kiểm tra document bản sao đã được cập nhật mapping id mới
+        expect(cloned.document, isNotNull);
+        expect(cloned.document!.blocks.length, 2);
+
+        final diagBlock = cloned.document!.blocks[0].data as BilliardDiagramBlockData;
+        final strokeBlock = cloned.document!.blocks[1].data as StrokeParameterBlockData;
+
+        expect(diagBlock.diagramId, newDiagId);
+        expect(strokeBlock.linkedDiagramId, newDiagId);
+
+        // Sửa sơ đồ trong bản sao (đổi lực thành 90%)
+        final updatedClonedDiagram = cloned.diagrams.first.copyWith(
+          scene: cloned.diagrams.first.scene.copyWith(
+            strokeParameters: const StrokeParameters(
+              thicknessMode: HitThicknessMode.twelfths,
+              twelfthCount: 4,
+              forcePercent: 90,
+            ),
+          ),
+        );
+        await repository.saveArticle(cloned.copyWith(diagrams: [updatedClonedDiagram]));
+
+        // Kiểm tra bài gốc vẫn giữ nguyên thông số lực 45%
+        final reloadedOrig = repository.getArticleById(origArtId);
+        expect(reloadedOrig!.diagrams.first.scene.strokeParameters!.forcePercent, 45);
+      });
+    });
+
+    testWidgets('4. Sửa khối ảnh và sơ đồ: giữ block ID và vị trí, không tăng số lượng khối; Undo/Redo khôi phục đúng', (tester) async {
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      const diag1Id = 'diag_1';
+      const diag2Id = 'diag_2';
+      final diag1 = ArticleDiagram(
+        id: diag1Id,
+        articleId: 'test_art',
+        scene: DiagramScene.defaultInitial(id: diag1Id),
+        caption: 'Sơ đồ 1',
+      );
+      final diag2 = ArticleDiagram(
+        id: diag2Id,
+        articleId: 'test_art',
+        scene: DiagramScene.defaultInitial(id: diag2Id),
+        caption: 'Sơ đồ 2',
+      );
+
+      final img1 = ArticleImageAttachment(
+        id: 'img_att_1',
+        articleId: 'test_art',
+        assetId: 'asset_1',
+        relativePath: 'images/img1.png',
+        originalName: 'anh_1.png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        caption: 'Ảnh 1',
+      );
+      final img2 = ArticleImageAttachment(
+        id: 'img_att_2',
+        articleId: 'test_art',
+        assetId: 'asset_2',
+        relativePath: 'images/img2.png',
+        originalName: 'anh_2.png',
+        mimeType: 'image/png',
+        sizeBytes: 100,
+        caption: 'Ảnh 2',
+      );
+
+      final initialDoc = ArticleDocument(
+        schemaVersion: 1,
+        blocks: [
+          ArticleBlock(
+            id: 'block_img_fixed',
+            type: ArticleBlockType.image,
+            data: const ImageBlockData(
+              assetId: 'asset_1',
+              caption: 'Ảnh 1',
+            ),
+          ),
+          ArticleBlock(
+            id: 'block_diag_fixed',
+            type: ArticleBlockType.billiardDiagram,
+            data: const BilliardDiagramBlockData(
+              diagramId: diag1Id,
+              caption: 'Sơ đồ 1',
+            ),
+          ),
+        ],
+      );
+
+      final testArt = Article(
+        id: 'test_art',
+        code: 'KT-TEST',
+        kind: ArticleKind.technique,
+        title: 'Test sửa khối',
+        summary: 'Tóm tắt',
+        primaryGroupId: 'tech_foundation',
+        diagrams: [diag1, diag2],
+        images: [img1, img2],
+        document: initialDoc,
+        createdAt: DateTime.now().toUtc(),
+        updatedAt: DateTime.now().toUtc(),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: ArticleDocumentEditor(
+                article: testArt,
+                initialDocument: initialDoc,
+                assetStore: ArticleAssetStore(directoryProvider: () async => tempDir),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final state = tester.state<ArticleDocumentEditorState>(
+        find.byType(ArticleDocumentEditor),
+      );
+      expect(state.currentDocument.blocks.length, 2);
+
+      // Mở menu chỉnh sửa khối ảnh đầu tiên
+      final moreMenu = find.byIcon(Icons.more_vert).first;
+      await tester.tap(moreMenu);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Chỉnh sửa'));
+      await tester.pumpAndSettle();
+
+      // Đổi sang chọn Ảnh 2
+      expect(find.text('Thay đổi ảnh đính kèm'), findsOneWidget);
+      await tester.tap(find.text('anh_2.png'));
+      await tester.pumpAndSettle();
+
+      // Kiểm tra: số lượng khối KHÔNG ĐỔI (vẫn là 2), block ID KHÔNG ĐỔI ('block_img_fixed')
+      expect(state.currentDocument.blocks.length, 2);
+      expect(state.currentDocument.blocks[0].id, 'block_img_fixed');
+      final newImgData = state.currentDocument.blocks[0].data as ImageBlockData;
+      expect(newImgData.assetId, 'asset_2');
+
+      // Undo lại
+      final undoBtn = find.byKey(const Key('document_undo_button'));
+      await tester.tap(undoBtn);
+      await tester.pumpAndSettle();
+
+      expect(state.currentDocument.blocks.length, 2);
+      expect(state.currentDocument.blocks[0].id, 'block_img_fixed');
+      final undoneImgData = state.currentDocument.blocks[0].data as ImageBlockData;
+      expect(undoneImgData.assetId, 'asset_1');
+
+      // Mở menu chỉnh sửa khối sơ đồ (khối thứ 2)
+      final moreMenu2 = find.byIcon(Icons.more_vert).at(1);
+      await tester.tap(moreMenu2);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Chỉnh sửa'));
+      await tester.pumpAndSettle();
+
+      // Đổi sang chọn Sơ đồ 2
+      expect(find.text('Thay đổi sơ đồ'), findsOneWidget);
+      final diagOption = find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.widgetWithText(ListTile, 'Sơ đồ 2'),
+      );
+      await tester.tap(diagOption);
+      await tester.pumpAndSettle();
+
+      // Kiểm tra: số lượng khối KHÔNG ĐỔI (vẫn là 2), block ID KHÔNG ĐỔI ('block_diag_fixed')
+      expect(state.currentDocument.blocks.length, 2);
+      expect(state.currentDocument.blocks[1].id, 'block_diag_fixed');
+      final newDiagData = state.currentDocument.blocks[1].data as BilliardDiagramBlockData;
+      expect(newDiagData.diagramId, diag2Id);
+    });
+
+    testWidgets('5. Thẻ liên kết đọc thông số từ sơ đồ; Thẻ độc lập giữ thông số riêng', (tester) async {
+      const diagId = 'diag_linked_test';
+      final diagram = ArticleDiagram(
+        id: diagId,
+        articleId: 'art_stroke_test',
+        scene: DiagramScene.defaultInitial(id: diagId).copyWith(
+          strokeParameters: const StrokeParameters(
+            thicknessMode: HitThicknessMode.twelfths,
+            twelfthCount: 3,
+            forcePercent: 30,
+          ),
+        ),
+      );
+
+      final doc = ArticleDocument(
+        schemaVersion: 1,
+        blocks: [
+          // Thẻ liên kết
+          ArticleBlock(
+            id: 'stroke_linked',
+            type: ArticleBlockType.strokeParameter,
+            data: const StrokeParameterBlockData(
+              linkedDiagramId: diagId,
+              strokeParameters: StrokeParameters(
+                thicknessMode: HitThicknessMode.twelfths,
+                twelfthCount: 1, // ban đầu trong block
+                forcePercent: 10,
+              ),
+            ),
+          ),
+          // Thẻ độc lập
+          ArticleBlock(
+            id: 'stroke_independent',
+            type: ArticleBlockType.strokeParameter,
+            data: const StrokeParameterBlockData(
+              linkedDiagramId: null,
+              strokeParameters: StrokeParameters(
+                thicknessMode: HitThicknessMode.twelfths,
+                twelfthCount: 8,
+                forcePercent: 80,
+              ),
+            ),
+          ),
+        ],
+      );
+
+      final article = Article(
+        id: 'art_stroke_test',
+        code: 'KT-STK',
+        kind: ArticleKind.technique,
+        title: 'Kiểm tra thẻ thông số',
+        summary: 'Tóm tắt',
+        primaryGroupId: 'tech_foundation',
+        diagrams: [diagram],
+        document: doc,
+        createdAt: DateTime.now().toUtc(),
+        updatedAt: DateTime.now().toUtc(),
+      );
+
+      // Render bằng ArticleDetailBody
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ArticleDetailBody(
+              article: article,
+              groupName: 'Cơ bản',
+              assetStore: ArticleAssetStore(directoryProvider: () async => tempDir),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Thẻ liên kết phải đọc thông số từ sơ đồ (3/12 và 30% lực)
+      expect(find.textContaining('3/12'), findsOneWidget);
+      expect(find.textContaining('30%'), findsOneWidget);
+
+      // Thẻ độc lập giữ thông số riêng (8/12 và 80% lực)
+      expect(find.textContaining('8/12'), findsOneWidget);
+      expect(find.textContaining('80%'), findsOneWidget);
+
+      // Cập nhật thông số sơ đồ sang 10/12 và 95% lực
+      final updatedDiagram = diagram.copyWith(
+        scene: diagram.scene.copyWith(
+          strokeParameters: const StrokeParameters(
+            thicknessMode: HitThicknessMode.twelfths,
+            twelfthCount: 10,
+            forcePercent: 95,
+          ),
+        ),
+      );
+      final updatedArticle = article.copyWith(diagrams: [updatedDiagram]);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ArticleDetailBody(
+              article: updatedArticle,
+              groupName: 'Cơ bản',
+              assetStore: ArticleAssetStore(directoryProvider: () async => tempDir),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Thẻ liên kết tự động cập nhật theo sơ đồ: 10/12 và 95%
+      expect(find.textContaining('10/12'), findsOneWidget);
+      expect(find.textContaining('95%'), findsOneWidget);
+
+      // Thẻ độc lập vẫn giữ nguyên 8/12 và 80%
+      expect(find.textContaining('8/12'), findsOneWidget);
+      expect(find.textContaining('80%'), findsOneWidget);
+      expect(find.text('Lực: 80%'), findsOneWidget);
+    });
+
+    testWidgets('6. Chỉnh ép phê và chạm trái k/12 -> lưu SQLite -> tải lại đúng dữ liệu', (tester) async {
+      await tester.runAsync(() async {
+        await initRepoAndController();
+        const artId = 'art_cuetip_save';
+
+        const customStroke = StrokeParameters(
+          thicknessMode: HitThicknessMode.twelfths,
+          twelfthCount: 5,
+          tipXMm: 14.5,
+          tipZMm: -9.8,
+          forcePercent: 65,
+        );
+
+        final doc = ArticleDocument(
+          schemaVersion: 1,
+          blocks: [
+            ArticleBlock(
+              id: 'stroke_block_test',
+              type: ArticleBlockType.strokeParameter,
+              data: const StrokeParameterBlockData(
+                linkedDiagramId: null,
+                strokeParameters: customStroke,
+              ),
+            ),
+          ],
+        );
+
+        final article = Article(
+          id: artId,
+          code: 'KT-CUE',
+          kind: ArticleKind.technique,
+          title: 'Bài kiểm tra ép phê',
+          summary: 'Tóm tắt',
+          primaryGroupId: 'tech_foundation',
+          document: doc,
+          createdAt: DateTime.now().toUtc(),
+          updatedAt: DateTime.now().toUtc(),
+        );
+
+        await repository.saveArticle(article);
+
+        final reloaded = repository.getArticleById(artId);
+        expect(reloaded, isNotNull);
+        expect(reloaded!.document, isNotNull);
+        expect(reloaded.document!.blocks.length, 1);
+
+        final data = reloaded.document!.blocks.first.data as StrokeParameterBlockData;
+        expect(data.strokeParameters.thicknessMode, HitThicknessMode.twelfths);
+        expect(data.strokeParameters.twelfthCount, 5);
+        expect(data.strokeParameters.tipXMm, 14.5);
+        expect(data.strokeParameters.tipZMm, -9.8);
+        expect(data.strokeParameters.forcePercent, 65);
+      });
     });
   });
 }

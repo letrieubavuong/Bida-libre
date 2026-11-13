@@ -800,7 +800,16 @@ class ArticleDocumentRenderer extends StatelessWidget {
     BuildContext context,
     StrokeParameterBlockData data,
   ) {
-    final stroke = data.strokeParameters;
+    StrokeParameters stroke = data.strokeParameters;
+    String? linkedDiagramLabel;
+    if (data.linkedDiagramId != null) {
+      final diagIdx = article.diagrams.indexWhere((d) => d.id == data.linkedDiagramId);
+      if (diagIdx >= 0) {
+        final diag = article.diagrams[diagIdx];
+        stroke = diag.scene.effectiveStrokeParameters;
+        linkedDiagramLabel = 'Sơ đồ ${diagIdx + 1}';
+      }
+    }
     final cueLabel = switch (stroke.cueBallId) {
       'ball_yellow' => 'Bi vàng',
       'ball_red' => 'Bi đỏ',
@@ -825,7 +834,7 @@ class ArticleDocumentRenderer extends StatelessWidget {
                 ),
                 if (data.linkedDiagramId != null)
                   Chip(
-                    label: const Text('Gắn với sơ đồ'),
+                    label: Text(linkedDiagramLabel != null ? 'Gắn với $linkedDiagramLabel' : 'Gắn với sơ đồ'),
                     visualDensity: VisualDensity.compact,
                   ),
               ],

@@ -960,10 +960,12 @@ class SqliteNotebookRepository implements NotebookRepository {
         final newArticleId = generateUuidV4();
         final newCode = await _allocateNextCode(txn, source.kind);
 
+        final diagramIdMap = <String, String>{};
         final clonedDiagrams = <ArticleDiagram>[];
         for (var i = 0; i < source.diagrams.length; i++) {
           final srcDiag = source.diagrams[i];
           final newDiagId = generateUuidV4();
+          diagramIdMap[srcDiag.id] = newDiagId;
           final clonedScene = srcDiag.scene.copyWith(id: newDiagId);
           clonedDiagrams.add(
             ArticleDiagram(
@@ -988,12 +990,34 @@ class SqliteNotebookRepository implements NotebookRepository {
           );
         }
 
+        ArticleDocument? clonedDocument;
+        if (source.document != null) {
+          final updatedBlocks = source.document!.blocks.map((block) {
+            if (block.type == ArticleBlockType.billiardDiagram &&
+                block.data is BilliardDiagramBlockData) {
+              final d = block.data as BilliardDiagramBlockData;
+              final mappedId = diagramIdMap[d.diagramId] ?? d.diagramId;
+              return block.copyWith(data: d.copyWith(diagramId: mappedId));
+            } else if (block.type == ArticleBlockType.strokeParameter &&
+                block.data is StrokeParameterBlockData) {
+              final d = block.data as StrokeParameterBlockData;
+              final mappedLinkedId = d.linkedDiagramId != null
+                  ? (diagramIdMap[d.linkedDiagramId] ?? d.linkedDiagramId)
+                  : null;
+              return block.copyWith(data: d.copyWith(linkedDiagramId: mappedLinkedId));
+            }
+            return block;
+          }).toList();
+          clonedDocument = source.document!.copyWith(blocks: updatedBlocks);
+        }
+
         cloned = source.copyWith(
           id: newArticleId,
           code: newCode,
           title: '${source.title} (Bản sao)',
           diagrams: clonedDiagrams,
           images: clonedImages,
+          document: clonedDocument,
           createdAt: now,
           updatedAt: now,
         );
