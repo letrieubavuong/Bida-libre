@@ -808,14 +808,14 @@ void main() {
           tester.getSize(find.byKey(const Key('billiard_table_canvas')));
 
       // Thu gọn rồi mở lại thanh công cụ nổi -> kích thước canvas không đổi
-      await tester.tap(find.byKey(const Key('floating_toolbar_collapse_button')));
+      await tester.tap(find.byKey(const Key('left_toolbar_collapse_button')));
       await tester.pumpAndSettle();
       expect(
         tester.getSize(find.byKey(const Key('billiard_table_canvas'))),
         initialCanvasSize,
       );
 
-      await tester.tap(find.byKey(const Key('floating_toolbar_collapse_button')));
+      await tester.tap(find.byKey(const Key('left_toolbar_collapse_button')));
       await tester.pumpAndSettle();
       expect(
         tester.getSize(find.byKey(const Key('billiard_table_canvas'))),
@@ -848,17 +848,17 @@ void main() {
       await tester.pumpAndSettle();
 
       final initialHandleCenter =
-          tester.getCenter(find.byKey(const Key('floating_toolbar_drag_handle')));
+          tester.getCenter(find.byKey(const Key('left_toolbar_drag_handle')));
 
       // Kéo thanh công cụ nổi xuống phía dưới -> vị trí nút đổi nhưng không tạo bất kỳ nét/bi bị kéo
       await tester.drag(
-        find.byKey(const Key('floating_toolbar_drag_handle')),
-        const Offset(40, 80),
+        find.byKey(const Key('left_toolbar_drag_handle')),
+        const Offset(0, 80),
       );
       await tester.pumpAndSettle();
 
       final movedHandleCenter =
-          tester.getCenter(find.byKey(const Key('floating_toolbar_drag_handle')));
+          tester.getCenter(find.byKey(const Key('left_toolbar_drag_handle')));
       expect(movedHandleCenter.dy, greaterThan(initialHandleCenter.dy + 40));
 
       // Chuyển sang Vẽ đường rồi chạm vào thanh thuộc tính nổi ở đáy -> KHÔNG thêm điểm nháp xuống bàn

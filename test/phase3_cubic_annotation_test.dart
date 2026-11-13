@@ -615,7 +615,11 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Bấm "Thành cong"
+      // Mở panel thuộc tính nếu đang thu gọn và bấm "Thành cong"
+      if (find.byKey(const Key('convert_segment_button')).evaluate().isEmpty) {
+        await tester.tap(find.byKey(const Key('open_properties_button')));
+        await tester.pumpAndSettle();
+      }
       await tester.tap(find.byKey(const Key('convert_segment_button')));
       await tester.pumpAndSettle();
       expect(controller.paths.first.segments.first.type, SegmentType.cubic);

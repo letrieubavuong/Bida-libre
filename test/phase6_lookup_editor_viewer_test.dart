@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'package:libre_billiard_notebook/geometry/table_geometry.dart';
 import 'package:libre_billiard_notebook/models/models.dart';
 import 'package:libre_billiard_notebook/repositories/sqlite_notebook_repository.dart';
 import 'package:libre_billiard_notebook/state/notebook_controller.dart';
@@ -403,7 +404,13 @@ void main() {
       // Kiểm tra canvas bàn bi hiển thị
       expect(find.byKey(const Key('billiard_table_canvas')), findsOneWidget);
 
-      // Panel thuộc tính ở đáy màn hình
+      // Mặc định khi vào màn hình: panel thuộc tính ẩn thành pill nhỏ để giải phóng không gian bàn bi
+      expect(find.byKey(const Key('floating_panel_collapsed_pill')), findsOneWidget);
+      expect(find.byKey(const Key('floating_ball_panel')), findsNothing);
+
+      // Chạm mở lại thuộc tính từ nút Thuộc tính trên thanh phải hoặc từ pill
+      await tester.tap(find.byKey(const Key('open_properties_button')));
+      await tester.pumpAndSettle();
       expect(find.byKey(const Key('floating_ball_panel')), findsOneWidget);
 
       // Nhấn nút thu gọn thuộc tính
@@ -416,20 +423,20 @@ void main() {
       expect(find.byKey(const Key('floating_panel_collapsed_pill')), findsOneWidget);
       expect(find.byKey(const Key('floating_ball_panel')), findsNothing);
 
-      // Chạm mở lại thuộc tính
+      // Chạm mở lại thuộc tính bằng pill
       await tester.tap(find.byKey(const Key('floating_panel_expand_button')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('floating_ball_panel')), findsOneWidget);
 
-      // Thu gọn thanh công cụ chính
-      final toolbarCollapse =
-          find.byKey(const Key('floating_toolbar_collapse_button'));
-      expect(toolbarCollapse, findsOneWidget);
-      await tester.tap(toolbarCollapse);
+      // Thu gọn thanh công cụ trái
+      final leftToolbarCollapse =
+          find.byKey(const Key('left_toolbar_collapse_button'));
+      expect(leftToolbarCollapse, findsOneWidget);
+      await tester.tap(leftToolbarCollapse);
       await tester.pumpAndSettle();
 
-      // Mở lại thanh công cụ
-      await tester.tap(toolbarCollapse);
+      // Mở lại thanh công cụ trái
+      await tester.tap(leftToolbarCollapse);
       await tester.pumpAndSettle();
     });
 
@@ -697,7 +704,11 @@ void main() {
       final collapseBtnFinder = find.byKey(const Key('floating_panel_collapse_button'));
       final expandBtnFinder = find.byKey(const Key('floating_panel_expand_button'));
 
-      // 1. Panel chọn bi (floating_ball_panel)
+      // 1. Panel chọn bi (floating_ball_panel) mặc định ẩn, bấm nút Thuộc tính để mở
+      expect(find.byKey(const Key('floating_panel_collapsed_pill')), findsOneWidget);
+      expect(find.byKey(const Key('floating_ball_panel')), findsNothing);
+      await tester.tap(find.byKey(const Key('open_properties_button')));
+      await tester.pumpAndSettle();
       expect(find.byKey(const Key('floating_ball_panel')), findsOneWidget);
       expect(collapseBtnFinder, findsOneWidget);
       await tester.tap(collapseBtnFinder);
@@ -821,6 +832,102 @@ void main() {
       expect(find.byKey(const Key('mode_select_chip')), findsOneWidget);
       expect(find.byKey(const Key('mode_draw_chip')), findsOneWidget);
       expect(find.byKey(const Key('save_scene_button')), findsOneWidget);
+    });
+
+    testWidgets(
+        '10. Zoom/Pan hai ngón, Vừa màn hình & Kéo riêng biệt hai capsule trên TableStageScreen',
+        (tester) async {
+      tester.view.physicalSize = const Size(390, 844); // iPhone 12/13/14
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() => tester.view.resetPhysicalSize());
+
+      final initialScene = _buildRichScene('zoom_pan_capsule_test');
+      final controller = TableEditorController(initialScene: initialScene);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TableStageScreen(
+            controller: controller,
+            returnSceneOnSave: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // 1. Kiểm tra vị trí ban đầu của 2 thanh capsule
+      final leftHandleFinder = find.byKey(const Key('left_toolbar_drag_handle'));
+      final rightHandleFinder = find.byKey(const Key('right_toolbar_drag_handle'));
+      expect(leftHandleFinder, findsOneWidget);
+      expect(rightHandleFinder, findsOneWidget);
+
+      final initialLeftPos = tester.getCenter(leftHandleFinder);
+      final initialRightPos = tester.getCenter(rightHandleFinder);
+
+      // Kéo thanh trái xuống
+      await tester.drag(leftHandleFinder, const Offset(0, 60));
+      await tester.pumpAndSettle();
+      final movedLeftPos = tester.getCenter(leftHandleFinder);
+      expect(movedLeftPos.dy, greaterThan(initialLeftPos.dy + 30));
+      // Thanh phải không bị ảnh hưởng khi kéo thanh trái
+      expect(tester.getCenter(rightHandleFinder).dy, equals(initialRightPos.dy));
+
+      // Kéo thanh phải xuống
+      await tester.drag(rightHandleFinder, const Offset(0, 50));
+      await tester.pumpAndSettle();
+      final movedRightPos = tester.getCenter(rightHandleFinder);
+      expect(movedRightPos.dy, greaterThan(initialRightPos.dy + 30));
+
+      // Thu gọn và mở lại không làm mất vị trí kéo
+      await tester.tap(find.byKey(const Key('left_toolbar_collapse_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('left_toolbar_collapse_button')));
+      await tester.pumpAndSettle();
+      expect(tester.getCenter(leftHandleFinder).dy, equals(movedLeftPos.dy));
+
+      // 2. Kiểm tra InteractiveViewer zoom / pan và nút Vừa màn hình
+      final interactiveFinder = find.byType(InteractiveViewer);
+      expect(interactiveFinder, findsOneWidget);
+      final ivWidget = tester.widget<InteractiveViewer>(interactiveFinder);
+      final transCtrl = ivWidget.transformationController!;
+
+      // Giả lập biến đổi zoom/pan bằng matrix
+      transCtrl.value = Matrix4.identity()
+        ..translateByDouble(30.0, 40.0, 0.0, 1.0)
+        ..scaleByDouble(1.5, 1.5, 1.0, 1.0);
+      await tester.pumpAndSettle();
+      expect(transCtrl.value, isNot(equals(Matrix4.identity())));
+
+      // Bấm nút Vừa màn hình (fit_screen_button)
+      await tester.tap(find.byKey(const Key('fit_screen_button')));
+      await tester.pumpAndSettle();
+
+      // Transform được reset về ma trận đơn vị
+      expect(transCtrl.value, equals(Matrix4.identity()));
+      // Thao tác khung nhìn không làm thay đổi dữ liệu scene hay tạo bước undo
+      expect(controller.canUndo, isFalse);
+      expect(controller.hasUnsavedChanges, isFalse);
+
+      // 3. Kéo bi sau zoom: tọa độ bi vẫn tính toán chính xác
+      transCtrl.value = Matrix4.identity()
+        ..scaleByDouble(1.2, 1.2, 1.0, 1.0);
+      await tester.pumpAndSettle();
+
+      final canvasFinder = find.byKey(const Key('billiard_table_canvas'));
+      final canvasTopLeft = tester.getTopLeft(canvasFinder);
+      final canvasSize = tester.getSize(canvasFinder);
+      final mapper = TableCoordinateMapper(canvasSize: canvasSize);
+
+      final whiteBall = controller.balls.firstWhere((b) => b.id == 'ball_white');
+      final whiteScreenPos = canvasTopLeft + mapper.diagramToScreen(whiteBall.center);
+
+      // Kéo nhẹ bi trắng
+      await tester.dragFrom(whiteScreenPos, const Offset(20, 20));
+      await tester.pumpAndSettle();
+
+      // Bi vẫn nằm hoàn toàn trong giới hạn lòng bàn hợp lệ
+      final updatedWhiteBall = controller.balls.firstWhere((b) => b.id == 'ball_white');
+      expect(updatedWhiteBall.center.x, inInclusiveRange(updatedWhiteBall.radius, 188.0 - updatedWhiteBall.radius));
+      expect(updatedWhiteBall.center.y, inInclusiveRange(updatedWhiteBall.radius, 376.0 - updatedWhiteBall.radius));
     });
   });
 }

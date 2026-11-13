@@ -38,13 +38,16 @@ class _TableStageScreenState extends State<TableStageScreen> {
   final FocusNode _xFocus = FocusNode();
   final FocusNode _yFocus = FocusNode();
 
-  final GlobalKey _toolbarKey = GlobalKey();
-  Offset? _toolbarOffset;
-  bool _toolbarCollapsed = false;
+  final TransformationController _transformationController =
+      TransformationController();
+
+  Offset? _leftToolbarOffset;
+  Offset? _rightToolbarOffset;
   bool _leftToolbarCollapsed = false;
   bool _rightToolbarCollapsed = false;
-  bool _contextPanelCollapsed = false;
-  bool _isDraggingToolbar = false;
+  bool _contextPanelCollapsed = true;
+  bool _isDraggingLeftToolbar = false;
+  bool _isDraggingRightToolbar = false;
 
   final ValueNotifier<String?> _coordinateErrorNotifier =
       ValueNotifier<String?>(null);
@@ -91,6 +94,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
     _xFocus.dispose();
     _yFocus.dispose();
     _coordinateErrorNotifier.dispose();
+    _transformationController.dispose();
     super.dispose();
   }
 
@@ -300,6 +304,10 @@ class _TableStageScreenState extends State<TableStageScreen> {
     if (!_controller.isDrawingWithDraft ||
         targetMode == EditorToolMode.drawPolyline) {
       _controller.setToolMode(targetMode);
+      if (targetMode == EditorToolMode.drawPolyline ||
+          targetMode == EditorToolMode.placeAnnotation) {
+        setState(() => _contextPanelCollapsed = false);
+      }
       return;
     }
 
@@ -925,19 +933,24 @@ class _TableStageScreenState extends State<TableStageScreen> {
     );
   }
 
-  Offset _clampToolbarOffset(Offset raw, Size areaSize) {
+  Offset _clampLeftToolbarOffset(Offset raw, Size areaSize) {
     const margin = 8.0;
-    final maxAllowedWidth = (areaSize.width - 72.0).clamp(120.0, 440.0);
-    final box = _toolbarKey.currentContext?.findRenderObject() as RenderBox?;
-    final fallbackWidth = _toolbarCollapsed
-        ? 100.0
-        : (428.0 > maxAllowedWidth ? maxAllowedWidth : 428.0);
-    final estWidth = box?.size.width ?? fallbackWidth;
-    final estHeight = box?.size.height ?? 52.0;
-
+    const estWidth = 56.0;
+    const estHeight = 320.0;
     final maxX = (areaSize.width - estWidth - margin).clamp(margin, double.infinity);
     final maxY = (areaSize.height - estHeight - margin).clamp(margin, double.infinity);
+    return Offset(
+      raw.dx.clamp(margin, maxX).toDouble(),
+      raw.dy.clamp(margin, maxY).toDouble(),
+    );
+  }
 
+  Offset _clampRightToolbarOffset(Offset raw, Size areaSize) {
+    const margin = 8.0;
+    const estWidth = 56.0;
+    const estHeight = 320.0;
+    final maxX = (areaSize.width - estWidth - margin).clamp(margin, double.infinity);
+    final maxY = (areaSize.height - estHeight - margin).clamp(margin, double.infinity);
     return Offset(
       raw.dx.clamp(margin, maxX).toDouble(),
       raw.dy.clamp(margin, maxY).toDouble(),
@@ -967,30 +980,38 @@ class _TableStageScreenState extends State<TableStageScreen> {
                 constraints.maxWidth,
                 constraints.maxHeight,
               );
-              final maxAllowedWidth = (areaSize.width - 72.0).clamp(120.0, 440.0);
-              final defaultToolbarWidth = _toolbarCollapsed
-                  ? 100.0
-                  : (428.0 > maxAllowedWidth ? maxAllowedWidth : 428.0);
-              final initialOffset = Offset(
-                (areaSize.width - defaultToolbarWidth - 8.0)
-                    .clamp(8.0, double.infinity),
-                8.0,
+              final leftOffset = _clampLeftToolbarOffset(
+                _leftToolbarOffset ?? const Offset(8.0, 56.0),
+                areaSize,
               );
-              final clampedToolbarOffset = _clampToolbarOffset(
-                _toolbarOffset ?? initialOffset,
+              final defaultRightOffset = Offset(
+                (areaSize.width - 56.0 - 8.0).clamp(8.0, double.infinity),
+                56.0,
+              );
+              final rightOffset = _clampRightToolbarOffset(
+                _rightToolbarOffset ?? defaultRightOffset,
                 areaSize,
               );
 
               return Stack(
                 children: [
-                  // LỚP 0: Canvas toàn vùng giữ nguyên kích thước & tỉ lệ 1:2
+                  // LỚP 0: Canvas toàn vùng trong InteractiveViewer hỗ trợ zoom / pan hai ngón
                   Positioned.fill(
                     child: Padding(
                       padding: const EdgeInsets.all(8.0),
                       child: AbsorbPointer(
-                        absorbing: _controller.isLoading || _isDraggingToolbar,
-                        child: BilliardTableCanvas(
-                          key: const Key('billiard_table_canvas'),
+                        absorbing: _controller.isLoading ||
+                            _isDraggingLeftToolbar ||
+                            _isDraggingRightToolbar,
+                        child: InteractiveViewer(
+                          transformationController: _transformationController,
+                          minScale: 0.5,
+                          maxScale: 4.0,
+                          panAxis: PanAxis.free,
+                          boundaryMargin: const EdgeInsets.all(120.0),
+                          child: BilliardTableCanvas(
+                            key: const Key('billiard_table_canvas'),
+                            transformationController: _transformationController,
                           scene: _controller.scene,
                           toolMode: _controller.toolMode,
                           selectedBallId: _controller.selectedBallId,
@@ -1116,6 +1137,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
                       ),
                     ),
                   ),
+                ),
 
                   // Thanh tiến trình mảnh khi đang tải từ kho
                   if (_controller.isLoading)
@@ -1198,42 +1220,21 @@ class _TableStageScreenState extends State<TableStageScreen> {
                       ),
                     ),
 
-                  // LỚP NỔI 1: Thanh công cụ chính giữ tay nắm kéo (chống break test cũ)
-                  Positioned(
-                    left: clampedToolbarOffset.dx,
-                    top: clampedToolbarOffset.dy,
-                    child: _FloatingSurfaceBarrier(
-                      child: _buildFloatingMainToolbar(
-                        context,
-                        areaSize,
-                        clampedToolbarOffset,
-                      ),
-                    ),
-                  ),
-
                   // LỚP NỔI TRÁI: Thanh công cụ dựng hình dạng capsule
                   Positioned(
-                    left: 8.0,
-                    top: 56.0,
-                    bottom: 80.0,
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: _FloatingSurfaceBarrier(
-                        child: _buildLeftDrawingToolbar(context, areaSize),
-                      ),
+                    left: leftOffset.dx,
+                    top: leftOffset.dy,
+                    child: _FloatingSurfaceBarrier(
+                      child: _buildLeftDrawingToolbar(context, areaSize),
                     ),
                   ),
 
                   // LỚP NỔI PHẢI: Thanh thao tác màn hình dạng capsule
                   Positioned(
-                    right: 8.0,
-                    top: 56.0,
-                    bottom: 80.0,
-                    child: Align(
-                      alignment: Alignment.centerRight,
-                      child: _FloatingSurfaceBarrier(
-                        child: _buildRightViewToolbar(context, areaSize),
-                      ),
+                    left: rightOffset.dx,
+                    top: rightOffset.dy,
+                    child: _FloatingSurfaceBarrier(
+                      child: _buildRightViewToolbar(context, areaSize),
                     ),
                   ),
 
@@ -1285,6 +1286,37 @@ class _TableStageScreenState extends State<TableStageScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Tay nắm kéo thanh trái
+              GestureDetector(
+                key: const Key('left_toolbar_drag_handle'),
+                behavior: HitTestBehavior.opaque,
+                onPanStart: (_) {
+                  if (_controller.isDraggingAny || _controller.isLoading) return;
+                  setState(() => _isDraggingLeftToolbar = true);
+                },
+                onPanUpdate: (details) {
+                  if (!_isDraggingLeftToolbar) return;
+                  setState(() {
+                    final current = _leftToolbarOffset ?? const Offset(8.0, 56.0);
+                    _leftToolbarOffset = _clampLeftToolbarOffset(current + details.delta, areaSize);
+                  });
+                },
+                onPanEnd: (_) => setState(() => _isDraggingLeftToolbar = false),
+                onPanCancel: () => setState(() => _isDraggingLeftToolbar = false),
+                child: Container(
+                  width: 36.0,
+                  height: 18.0,
+                  alignment: Alignment.center,
+                  child: Container(
+                    width: 20.0,
+                    height: 4.0,
+                    decoration: BoxDecoration(
+                      color: Colors.white38,
+                      borderRadius: BorderRadius.circular(2.0),
+                    ),
+                  ),
+                ),
+              ),
               // Nút thu gọn / mở rộng thanh trái
               IconButton(
                 key: const Key('left_toolbar_collapse_button'),
@@ -1427,6 +1459,38 @@ class _TableStageScreenState extends State<TableStageScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Tay nắm kéo thanh phải
+              GestureDetector(
+                key: const Key('right_toolbar_drag_handle'),
+                behavior: HitTestBehavior.opaque,
+                onPanStart: (_) {
+                  if (_controller.isDraggingAny || _controller.isLoading) return;
+                  setState(() => _isDraggingRightToolbar = true);
+                },
+                onPanUpdate: (details) {
+                  if (!_isDraggingRightToolbar) return;
+                  setState(() {
+                    final defaultRightOffset = Offset((areaSize.width - 56.0 - 8.0).clamp(8.0, double.infinity), 56.0);
+                    final current = _rightToolbarOffset ?? defaultRightOffset;
+                    _rightToolbarOffset = _clampRightToolbarOffset(current + details.delta, areaSize);
+                  });
+                },
+                onPanEnd: (_) => setState(() => _isDraggingRightToolbar = false),
+                onPanCancel: () => setState(() => _isDraggingRightToolbar = false),
+                child: Container(
+                  width: 36.0,
+                  height: 18.0,
+                  alignment: Alignment.center,
+                  child: Container(
+                    width: 20.0,
+                    height: 4.0,
+                    decoration: BoxDecoration(
+                      color: Colors.white38,
+                      borderRadius: BorderRadius.circular(2.0),
+                    ),
+                  ),
+                ),
+              ),
               // Nút thu gọn / mở rộng thanh phải
               IconButton(
                 key: const Key('right_toolbar_collapse_button'),
@@ -1474,7 +1538,9 @@ class _TableStageScreenState extends State<TableStageScreen> {
                   icon: const Icon(Icons.crop_free, color: Colors.white),
                   onPressed: () {
                     setState(() {
-                      _toolbarOffset = null;
+                      _transformationController.value = Matrix4.identity();
+                      _leftToolbarOffset = null;
+                      _rightToolbarOffset = null;
                     });
                     _showSnack('Đã căn chỉnh bàn vừa vùng nhìn.');
                   },
@@ -1505,7 +1571,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
                   padding: EdgeInsets.zero,
                   icon: const Icon(Icons.tune, color: Colors.white),
                   onPressed: () {
-                    setState(() => _contextPanelCollapsed = false);
+                    setState(() => _contextPanelCollapsed = !_contextPanelCollapsed);
                   },
                 ),
                 // Menu thêm (Hiển thị & Bắt dính, đặt lại bi, tải lại)
@@ -1580,7 +1646,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
             // 3 Bi chọn trực quan to bản
             for (final ball in _controller.balls) ...[
               GestureDetector(
-                key: Key('bottom_select_${ball.id}'),
+                key: Key('select_${ball.id}'),
                 onTap: locked ? null : () => _controller.selectBall(ball.id),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 150),
@@ -1678,7 +1744,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
             if (selected != null) ...[
               const SizedBox(width: 4.0),
               IconButton(
-                key: const Key('bottom_lock_ball_button'),
+                key: const Key('lock_ball_button'),
                 tooltip: selected.locked ? 'Mở khóa vị trí' : 'Khóa vị trí',
                 constraints: const BoxConstraints(minWidth: 36.0, minHeight: 36.0),
                 padding: EdgeInsets.zero,
@@ -1690,7 +1756,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
                 onPressed: locked ? null : () => _controller.toggleBallLock(selected.id),
               ),
               IconButton(
-                key: const Key('bottom_open_xy_button'),
+                key: const Key('open_xy_button'),
                 tooltip: 'Tọa độ X/Y (${_formatCoord(selected.center.x)}, ${_formatCoord(selected.center.y)})',
                 constraints: const BoxConstraints(minWidth: 36.0, minHeight: 36.0),
                 padding: EdgeInsets.zero,
@@ -1699,61 +1765,6 @@ class _TableStageScreenState extends State<TableStageScreen> {
               ),
             ],
           ],
-        ),
-      ),
-    );
-  }
-  Widget _buildFloatingMainToolbar(
-    BuildContext context,
-    Size areaSize,
-    Offset currentOffset,
-  ) {
-    // Giữ tay nắm kéo và nút tương thích test cũ
-    return Material(
-      key: _toolbarKey,
-      color: Colors.transparent,
-      child: GestureDetector(
-        key: const Key('floating_toolbar_drag_handle'),
-        behavior: HitTestBehavior.translucent,
-        onPanStart: (_) {
-          if (_controller.isDraggingAny || _controller.isLoading) return;
-          setState(() {
-            _isDraggingToolbar = true;
-            _toolbarOffset ??= currentOffset;
-          });
-        },
-        onPanUpdate: (details) {
-          if (!_isDraggingToolbar) return;
-          setState(() {
-            final next = (_toolbarOffset ?? currentOffset) + details.delta;
-            _toolbarOffset = _clampToolbarOffset(next, areaSize);
-          });
-        },
-        onPanEnd: (_) {
-          if (_isDraggingToolbar) {
-            setState(() => _isDraggingToolbar = false);
-          }
-        },
-        onPanCancel: () {
-          if (_isDraggingToolbar) {
-            setState(() => _isDraggingToolbar = false);
-          }
-        },
-        child: IconButton(
-          key: const Key('floating_toolbar_collapse_button'),
-          tooltip: _toolbarCollapsed ? 'Mở rộng công cụ' : 'Thu gọn công cụ',
-          icon: Icon(
-            _toolbarCollapsed ? Icons.unfold_more : Icons.unfold_less,
-            color: Colors.white70,
-            size: 20.0,
-          ),
-          onPressed: () {
-            setState(() {
-              _toolbarCollapsed = !_toolbarCollapsed;
-              _leftToolbarCollapsed = _toolbarCollapsed;
-              _rightToolbarCollapsed = _toolbarCollapsed;
-            });
-          },
         ),
       ),
     );

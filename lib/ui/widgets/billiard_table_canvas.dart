@@ -71,6 +71,8 @@ class BilliardTableCanvas extends StatefulWidget {
 
   final ValueChanged<DiagramPoint> onDrawPointPlaced;
 
+  final TransformationController? transformationController;
+
   const BilliardTableCanvas({
     super.key,
     required this.scene,
@@ -109,6 +111,7 @@ class BilliardTableCanvas extends StatefulWidget {
     this.onLockedAnnotationTouched,
     this.onAnnotationPlaceTapped,
     required this.onDrawPointPlaced,
+    this.transformationController,
   });
 
   @override
@@ -122,6 +125,7 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
 
   int? _drawPointerId;
   DiagramPoint? _liveDrawCursor;
+  int _activePointersOnCanvas = 0;
 
   @override
   void didUpdateWidget(covariant BilliardTableCanvas oldWidget) {
@@ -181,6 +185,12 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
     }
   }
 
+  Offset _transformLocalPosition(Offset screenPos) {
+    final tc = widget.transformationController;
+    if (tc == null) return screenPos;
+    return tc.toScene(screenPos);
+  }
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
@@ -194,10 +204,24 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
         return Listener(
           behavior: HitTestBehavior.opaque,
           onPointerDown: (event) {
+            _activePointersOnCanvas++;
+            if (_activePointersOnCanvas >= 2) {
+              if (_activePointerId != null) {
+                _cancelCurrentSelectDrag();
+              }
+              if (_drawPointerId != null) {
+                _drawPointerId = null;
+                setState(() {
+                  _liveDrawCursor = null;
+                });
+              }
+              return;
+            }
+            final effectiveLocalPos = _transformLocalPosition(event.localPosition);
             if (widget.toolMode == EditorToolMode.drawPolyline) {
               if (_drawPointerId != null) return;
               _drawPointerId = event.pointer;
-              final raw = mapper.screenToDiagram(event.localPosition);
+              final raw = mapper.screenToDiagram(effectiveLocalPos);
               setState(() {
                 _liveDrawCursor = _snapDraftCursor(raw);
               });
@@ -205,7 +229,7 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
             }
 
             if (widget.toolMode == EditorToolMode.placeAnnotation) {
-              final raw = mapper.screenToDiagram(event.localPosition);
+              final raw = mapper.screenToDiagram(effectiveLocalPos);
               widget.onAnnotationPlaceTapped?.call(raw);
               return;
             }
@@ -220,12 +244,12 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
             final currentSelectedPath = _selectedPath;
             if (currentSelectedPath != null) {
               final controlHit = PathGeometry.hitTestControlHandle(
-                screenPosition: event.localPosition,
+                screenPosition: effectiveLocalPos,
                 path: currentSelectedPath,
                 mapper: mapper,
               );
               final vertexHit = PathGeometry.hitTestPathVertex(
-                screenPosition: event.localPosition,
+                screenPosition: effectiveLocalPos,
                 path: currentSelectedPath,
                 mapper: mapper,
               );
@@ -233,7 +257,7 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
                   (vertexHit == null ||
                       controlHit.distancePx < vertexHit.distancePx);
               if (preferControl && widget.onControlHandleDragStart != null) {
-                final touchDiagram = mapper.screenToDiagram(event.localPosition);
+                final touchDiagram = mapper.screenToDiagram(effectiveLocalPos);
                 final token = widget.onControlHandleDragStart!(
                   currentSelectedPath.id,
                   controlHit.segmentIndex,
@@ -248,7 +272,7 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
                 return;
               }
               if (vertexHit != null) {
-                final touchDiagram = mapper.screenToDiagram(event.localPosition);
+                final touchDiagram = mapper.screenToDiagram(effectiveLocalPos);
                 final token = widget.onVertexDragStart(
                   currentSelectedPath.id,
                   vertexHit.vertexIndex,
@@ -265,14 +289,14 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
 
             // 2. Kiểm tra chạm bi
             final ballHit = BallPlacementValidator.hitTestBall(
-              screenPosition: event.localPosition,
+              screenPosition: effectiveLocalPos,
               balls: widget.scene.balls,
               mapper: mapper,
               preferredBallId: widget.selectedBallId,
             );
             if (ballHit != null) {
               widget.onBallTapped(ballHit.id);
-              final touchDiagram = mapper.screenToDiagram(event.localPosition);
+              final touchDiagram = mapper.screenToDiagram(effectiveLocalPos);
               final token = widget.onBallDragStart(ballHit.id, touchDiagram);
               if (token != null) {
                 _activePointerId = event.pointer;
@@ -286,20 +310,20 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
 
             // 3. Kiểm tra chạm chú thích nổi (nhãn, số thứ tự, chấm mốc)
             final fgAnnHit = AnnotationGeometry.hitTestAnnotation(
-              screenPosition: event.localPosition,
+              screenPosition: effectiveLocalPos,
               annotations: widget.scene.annotations,
               mapper: mapper,
               preferredAnnotationId: widget.selectedAnnotationId,
               foregroundOnly: true,
             );
             if (fgAnnHit != null) {
-              _handleAnnotationHit(fgAnnHit.annotation, event, mapper);
+              _handleAnnotationHit(fgAnnHit.annotation, effectiveLocalPos, event.pointer, mapper);
               return;
             }
 
             // 4. Kiểm tra chạm thân đường (theo đường cong thực)
             final pathHit = PathGeometry.hitTestPath(
-              screenPosition: event.localPosition,
+              screenPosition: effectiveLocalPos,
               paths: widget.scene.paths,
               mapper: mapper,
               preferredPathId: widget.selectedPathId,
@@ -314,14 +338,14 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
 
             // 5. Kiểm tra chạm chú thích vùng (vùng tròn / vùng chữ nhật)
             final zoneHit = AnnotationGeometry.hitTestAnnotation(
-              screenPosition: event.localPosition,
+              screenPosition: effectiveLocalPos,
               annotations: widget.scene.annotations,
               mapper: mapper,
               preferredAnnotationId: widget.selectedAnnotationId,
               zonesOnly: true,
             );
             if (zoneHit != null) {
-              _handleAnnotationHit(zoneHit.annotation, event, mapper);
+              _handleAnnotationHit(zoneHit.annotation, effectiveLocalPos, event.pointer, mapper);
               return;
             }
 
@@ -334,9 +358,10 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
             }
           },
           onPointerMove: (event) {
+            final effectiveLocalPos = _transformLocalPosition(event.localPosition);
             if (widget.toolMode == EditorToolMode.drawPolyline) {
               if (event.pointer != _drawPointerId) return;
-              final raw = mapper.screenToDiagram(event.localPosition);
+              final raw = mapper.screenToDiagram(effectiveLocalPos);
               setState(() {
                 _liveDrawCursor = _snapDraftCursor(raw);
               });
@@ -350,7 +375,7 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
                 kind == null) {
               return;
             }
-            final touchDiagram = mapper.screenToDiagram(event.localPosition);
+            final touchDiagram = mapper.screenToDiagram(effectiveLocalPos);
             switch (kind) {
               case _ActiveDragKind.ball:
                 widget.onBallDragUpdateFromTouch(touchDiagram, token);
@@ -365,9 +390,13 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
             }
           },
           onPointerUp: (event) {
+            if (_activePointersOnCanvas > 0) {
+              _activePointersOnCanvas--;
+            }
+            final effectiveLocalPos = _transformLocalPosition(event.localPosition);
             if (widget.toolMode == EditorToolMode.drawPolyline) {
               if (event.pointer != _drawPointerId) return;
-              final raw = mapper.screenToDiagram(event.localPosition);
+              final raw = mapper.screenToDiagram(effectiveLocalPos);
               _drawPointerId = null;
               setState(() {
                 _liveDrawCursor = null;
@@ -396,6 +425,9 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
             }
           },
           onPointerCancel: (event) {
+            if (_activePointersOnCanvas > 0) {
+              _activePointersOnCanvas--;
+            }
             if (widget.toolMode == EditorToolMode.drawPolyline) {
               if (event.pointer != _drawPointerId) return;
               _drawPointerId = null;
@@ -433,15 +465,16 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
 
   void _handleAnnotationHit(
     DiagramAnnotation ann,
-    PointerDownEvent event,
+    Offset effectivePos,
+    int pointerId,
     TableCoordinateMapper mapper,
   ) {
     widget.onAnnotationTapped?.call(ann.id);
     if (widget.onAnnotationDragStart != null) {
-      final touchDiagram = mapper.screenToDiagram(event.localPosition);
+      final touchDiagram = mapper.screenToDiagram(effectivePos);
       final token = widget.onAnnotationDragStart!(ann.id, touchDiagram);
       if (token != null) {
-        _activePointerId = event.pointer;
+        _activePointerId = pointerId;
         _activeDragToken = token;
         _activeDragKind = _ActiveDragKind.annotation;
       } else if (ann.locked) {
