@@ -682,23 +682,154 @@ class CueTipDialog extends StatefulWidget {
 }
 
 class _CueTipDialogState extends State<CueTipDialog> {
+  static const double maxTipMm = CueTipConvention.referenceBallRadiusMm - 1.0; // 29.75 mm
+
   late StrokeParameters _current;
   late TextEditingController _xCtrl;
   late TextEditingController _zCtrl;
+  final FocusNode _xFocus = FocusNode();
+  final FocusNode _zFocus = FocusNode();
+
+  String? _xError;
+  String? _zError;
+  String? _normalizationNotice;
 
   @override
   void initState() {
     super.initState();
     _current = widget.initialStroke;
-    _xCtrl = TextEditingController(text: _current.tipXMm.toStringAsFixed(2));
-    _zCtrl = TextEditingController(text: _current.tipZMm.toStringAsFixed(2));
+    _xCtrl = TextEditingController(text: _formatMmValue(_current.tipXMm));
+    _zCtrl = TextEditingController(text: _formatMmValue(_current.tipZMm));
+
+    _xFocus.addListener(() {
+      if (!_xFocus.hasFocus) {
+        _normalizeTextField(isX: true);
+      }
+    });
+    _zFocus.addListener(() {
+      if (!_zFocus.hasFocus) {
+        _normalizeTextField(isX: false);
+      }
+    });
+
+    _validateFields();
   }
 
   @override
   void dispose() {
+    _xFocus.dispose();
+    _zFocus.dispose();
     _xCtrl.dispose();
     _zCtrl.dispose();
     super.dispose();
+  }
+
+  static String _formatMmValue(double val) {
+    if (val.abs() < 1e-6) return '0';
+    var s = val.toString();
+    if (s.contains('.')) {
+      while (s.endsWith('0')) {
+        s = s.substring(0, s.length - 1);
+      }
+      if (s.endsWith('.')) {
+        s = s.substring(0, s.length - 1);
+      }
+    }
+    return s;
+  }
+
+  void _normalizeTextField({required bool isX}) {
+    if (isX) {
+      if (_xCtrl.text.contains(',')) {
+        final norm = _xCtrl.text.replaceAll(',', '.');
+        _xCtrl.text = norm;
+      }
+    } else {
+      if (_zCtrl.text.contains(',')) {
+        final norm = _zCtrl.text.replaceAll(',', '.');
+        _zCtrl.text = norm;
+      }
+    }
+    _validateFields();
+  }
+
+  void _validateFields() {
+    final xRaw = _xCtrl.text.trim();
+    final zRaw = _zCtrl.text.trim();
+
+    String? xErr;
+    double? xParsed;
+    if (xRaw.isEmpty) {
+      xErr = 'Không được để trống';
+    } else {
+      final xNorm = xRaw.replaceAll(',', '.');
+      final xLower = xNorm.toLowerCase();
+      if (xLower == 'nan') {
+        xErr = 'Không chấp nhận giá trị NaN';
+      } else if (xLower.contains('inf')) {
+        xErr = 'Không chấp nhận giá trị Infinity';
+      } else {
+        final p = double.tryParse(xNorm);
+        if (p == null) {
+          xErr = 'Vui lòng nhập số hợp lệ';
+        } else if (p.isNaN) {
+          xErr = 'Không chấp nhận giá trị NaN';
+        } else if (!p.isFinite) {
+          xErr = 'Không chấp nhận giá trị Infinity';
+        } else if (p.abs() > maxTipMm) {
+          xErr = 'Vượt quá mặt bi (tối đa ±${maxTipMm.toStringAsFixed(2)} mm)';
+        } else {
+          xParsed = p;
+        }
+      }
+    }
+
+    String? zErr;
+    double? zParsed;
+    if (zRaw.isEmpty) {
+      zErr = 'Không được để trống';
+    } else {
+      final zNorm = zRaw.replaceAll(',', '.');
+      final zLower = zNorm.toLowerCase();
+      if (zLower == 'nan') {
+        zErr = 'Không chấp nhận giá trị NaN';
+      } else if (zLower.contains('inf')) {
+        zErr = 'Không chấp nhận giá trị Infinity';
+      } else {
+        final p = double.tryParse(zNorm);
+        if (p == null) {
+          zErr = 'Vui lòng nhập số hợp lệ';
+        } else if (p.isNaN) {
+          zErr = 'Không chấp nhận giá trị NaN';
+        } else if (!p.isFinite) {
+          zErr = 'Không chấp nhận giá trị Infinity';
+        } else if (p.abs() > maxTipMm) {
+          zErr = 'Vượt quá mặt bi (tối đa ±${maxTipMm.toStringAsFixed(2)} mm)';
+        } else {
+          zParsed = p;
+        }
+      }
+    }
+
+    // Nếu cả x và z đều hợp lệ độc lập, kiểm tra bán kính khoảng cách tổng thể
+    if (xErr == null && zErr == null && xParsed != null && zParsed != null) {
+      final dist = sqrt(xParsed * xParsed + zParsed * zParsed);
+      if (dist > maxTipMm) {
+        zErr = 'Khoảng cách đến tâm (${dist.toStringAsFixed(2)} mm) vượt quá bán kính mặt bi (${maxTipMm.toStringAsFixed(2)} mm)';
+      } else {
+        _current = _current.copyWith(tipXMm: xParsed, tipZMm: zParsed);
+      }
+    }
+
+    setState(() {
+      _xError = xErr;
+      _zError = zErr;
+      if (xRaw.contains(',') || zRaw.contains(',')) {
+        _normalizationNotice = 'Đã nhận dấu phẩy và chuẩn hóa thành số thập phân hợp lệ.';
+      } else if (_normalizationNotice != null && !xRaw.contains(',') && !zRaw.contains(',')) {
+        _normalizationNotice = null;
+      }
+    });
   }
 
   void _handleTouch(Offset localPos, double ballSize) {
@@ -711,22 +842,27 @@ class _CueTipDialogState extends State<CueTipDialog> {
     var xMm = CueTipGeometry.pxToMm(dx, radius);
     var zMm = -CueTipGeometry.pxToMm(dy, radius);
 
-    // Giới hạn trong bán kính bi reference 30.75 mm
+    // Dùng cùng quy tắc giới hạn maxTipMm
     final dist = sqrt(xMm * xMm + zMm * zMm);
-    const maxMm = CueTipConvention.referenceBallRadiusMm - 1.0;
-    if (dist > maxMm && dist > 1e-6) {
-      xMm = xMm * (maxMm / dist);
-      zMm = zMm * (maxMm / dist);
+    String? notice;
+    if (dist > maxTipMm && dist > 1e-6) {
+      xMm = xMm * (maxTipMm / dist);
+      zMm = zMm * (maxTipMm / dist);
+      notice = 'Đã chuẩn hóa vị trí mũi cơ trong phạm vi mặt bi (${maxTipMm.toStringAsFixed(2)} mm)';
     }
 
     setState(() {
       _current = _current.copyWith(tipXMm: xMm, tipZMm: zMm);
-      _xCtrl.text = xMm.toStringAsFixed(2);
-      _zCtrl.text = zMm.toStringAsFixed(2);
+      _xCtrl.text = _formatMmValue(xMm);
+      _zCtrl.text = _formatMmValue(zMm);
+      _xError = null;
+      _zError = null;
+      _normalizationNotice = notice;
     });
   }
 
   void _setLevel({int? xLevel, int? zLevel}) {
+    // Giá trị chính xác theo CueTipConvention, không làm tròn
     final newX = xLevel != null
         ? (xLevel * CueTipConvention.fourLevelStepMm)
         : _current.tipXMm;
@@ -736,14 +872,40 @@ class _CueTipDialogState extends State<CueTipDialog> {
 
     setState(() {
       _current = _current.copyWith(tipXMm: newX, tipZMm: newZ);
-      _xCtrl.text = newX.toStringAsFixed(2);
-      _zCtrl.text = newZ.toStringAsFixed(2);
+      _xCtrl.text = _formatMmValue(newX);
+      _zCtrl.text = _formatMmValue(newZ);
+      _xError = null;
+      _zError = null;
+      _normalizationNotice = null;
     });
+  }
+
+  void _apply() {
+    _normalizeTextField(isX: true);
+    _normalizeTextField(isX: false);
+    _validateFields();
+    if (_xError != null || _zError != null) return;
+
+    final xNorm = _xCtrl.text.trim().replaceAll(',', '.');
+    final zNorm = _zCtrl.text.trim().replaceAll(',', '.');
+    final xParsed = double.tryParse(xNorm) ?? _current.tipXMm;
+    final zParsed = double.tryParse(zNorm) ?? _current.tipZMm;
+
+    final updated = _current.copyWith(
+      tipXMm: xParsed,
+      tipZMm: zParsed,
+    );
+    widget.onApply(updated);
+    Navigator.of(context).pop();
   }
 
   @override
   Widget build(BuildContext context) {
     const double ballSize = 130.0;
+    final canApply = _xError == null &&
+        _zError == null &&
+        _xCtrl.text.trim().isNotEmpty &&
+        _zCtrl.text.trim().isNotEmpty;
 
     return AlertDialog(
       title: const Text('Ép phê / Điểm mũi cơ'),
@@ -787,40 +949,47 @@ class _CueTipDialogState extends State<CueTipDialog> {
                   children: [
                     Text(
                       'Ngang (X): ${_current.horizontalTipLabel}',
+                      key: const Key('cue_tip_x_summary'),
                       style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.0),
                     ),
                     const SizedBox(height: 4.0),
                     Text(
                       'Đứng (Z): ${_current.verticalTipLabel}',
+                      key: const Key('cue_tip_z_summary'),
                       style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.0),
                     ),
                   ],
                 ),
               ),
+              if (_normalizationNotice != null) ...[
+                const SizedBox(height: 6.0),
+                Text(
+                  _normalizationNotice!,
+                  key: const Key('cue_tip_normalization_notice'),
+                  style: const TextStyle(fontSize: 11.0, color: Colors.amber),
+                  textAlign: TextAlign.center,
+                ),
+              ],
               const SizedBox(height: 10.0),
 
               // Bổ sung ô nhập X và Z chính xác (mm)
               Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Expanded(
                     child: TextField(
                       key: const Key('cue_tip_x_input'),
                       controller: _xCtrl,
+                      focusNode: _xFocus,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'X (mm)',
                         hintText: '- trái / + phải',
                         isDense: true,
-                        border: OutlineInputBorder(),
+                        border: const OutlineInputBorder(),
+                        errorText: _xError,
                       ),
-                      onChanged: (val) {
-                        final parsed = double.tryParse(val.trim());
-                        if (parsed != null && parsed.isFinite) {
-                          setState(() {
-                            _current = _current.copyWith(tipXMm: parsed.clamp(-30.0, 30.0));
-                          });
-                        }
-                      },
+                      onChanged: (_) => _validateFields(),
                     ),
                   ),
                   const SizedBox(width: 8.0),
@@ -828,31 +997,26 @@ class _CueTipDialogState extends State<CueTipDialog> {
                     child: TextField(
                       key: const Key('cue_tip_z_input'),
                       controller: _zCtrl,
+                      focusNode: _zFocus,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'Z (mm)',
                         hintText: '- dưới / + trên',
                         isDense: true,
-                        border: OutlineInputBorder(),
+                        border: const OutlineInputBorder(),
+                        errorText: _zError,
                       ),
-                      onChanged: (val) {
-                        final parsed = double.tryParse(val.trim());
-                        if (parsed != null && parsed.isFinite) {
-                          setState(() {
-                            _current = _current.copyWith(tipZMm: parsed.clamp(-30.0, 30.0));
-                          });
-                        }
-                      },
+                      onChanged: (_) => _validateFields(),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 8.0),
+              const SizedBox(height: 10.0),
 
-              // Chọn nhanh các mức ngang chuẩn
+              // Chọn nhanh các mức ngang chuẩn (đủ 4 mức cho trái/phải và tâm)
               const Align(
                 alignment: Alignment.centerLeft,
-                child: Text('Chọn mức ngang chuẩn:', style: TextStyle(fontSize: 12.0, fontWeight: FontWeight.w600)),
+                child: Text('Chọn nhanh ngang (Trái 1..4, Phải 1..4):', style: TextStyle(fontSize: 12.0, fontWeight: FontWeight.w600)),
               ),
               const SizedBox(height: 4.0),
               Wrap(
@@ -861,33 +1025,58 @@ class _CueTipDialogState extends State<CueTipDialog> {
                 runSpacing: 4.0,
                 children: [
                   ActionChip(
+                    key: const Key('cue_tip_chip_left_4'),
                     label: const Text('Trái 4'),
                     onPressed: () => _setLevel(xLevel: -4),
                   ),
                   ActionChip(
+                    key: const Key('cue_tip_chip_left_3'),
+                    label: const Text('Trái 3'),
+                    onPressed: () => _setLevel(xLevel: -3),
+                  ),
+                  ActionChip(
+                    key: const Key('cue_tip_chip_left_2'),
                     label: const Text('Trái 2'),
                     onPressed: () => _setLevel(xLevel: -2),
                   ),
                   ActionChip(
+                    key: const Key('cue_tip_chip_left_1'),
+                    label: const Text('Trái 1'),
+                    onPressed: () => _setLevel(xLevel: -1),
+                  ),
+                  ActionChip(
+                    key: const Key('cue_tip_chip_x_center'),
                     label: const Text('Tâm'),
                     onPressed: () => _setLevel(xLevel: 0),
                   ),
                   ActionChip(
+                    key: const Key('cue_tip_chip_right_1'),
+                    label: const Text('Phải 1'),
+                    onPressed: () => _setLevel(xLevel: 1),
+                  ),
+                  ActionChip(
+                    key: const Key('cue_tip_chip_right_2'),
                     label: const Text('Phải 2'),
                     onPressed: () => _setLevel(xLevel: 2),
                   ),
                   ActionChip(
+                    key: const Key('cue_tip_chip_right_3'),
+                    label: const Text('Phải 3'),
+                    onPressed: () => _setLevel(xLevel: 3),
+                  ),
+                  ActionChip(
+                    key: const Key('cue_tip_chip_right_4'),
                     label: const Text('Phải 4'),
                     onPressed: () => _setLevel(xLevel: 4),
                   ),
                 ],
               ),
-              const SizedBox(height: 8.0),
+              const SizedBox(height: 10.0),
 
-              // Chọn nhanh các mức đứng chuẩn
+              // Chọn nhanh các mức đứng chuẩn (đủ 4 mức cho trên/dưới và tâm)
               const Align(
                 alignment: Alignment.centerLeft,
-                child: Text('Chọn mức đứng chuẩn:', style: TextStyle(fontSize: 12.0, fontWeight: FontWeight.w600)),
+                child: Text('Chọn nhanh đứng (Dưới 1..4, Trên 1..4):', style: TextStyle(fontSize: 12.0, fontWeight: FontWeight.w600)),
               ),
               const SizedBox(height: 4.0),
               Wrap(
@@ -896,28 +1085,53 @@ class _CueTipDialogState extends State<CueTipDialog> {
                 runSpacing: 4.0,
                 children: [
                   ActionChip(
+                    key: const Key('cue_tip_chip_down_4'),
                     label: const Text('Dưới 4'),
                     onPressed: () => _setLevel(zLevel: -4),
                   ),
                   ActionChip(
+                    key: const Key('cue_tip_chip_down_3'),
+                    label: const Text('Dưới 3'),
+                    onPressed: () => _setLevel(zLevel: -3),
+                  ),
+                  ActionChip(
+                    key: const Key('cue_tip_chip_down_2'),
                     label: const Text('Dưới 2'),
                     onPressed: () => _setLevel(zLevel: -2),
                   ),
                   ActionChip(
+                    key: const Key('cue_tip_chip_down_1'),
+                    label: const Text('Dưới 1'),
+                    onPressed: () => _setLevel(zLevel: -1),
+                  ),
+                  ActionChip(
+                    key: const Key('cue_tip_chip_z_center'),
                     label: const Text('Tâm'),
                     onPressed: () => _setLevel(zLevel: 0),
                   ),
                   ActionChip(
+                    key: const Key('cue_tip_chip_up_1'),
+                    label: const Text('Trên 1'),
+                    onPressed: () => _setLevel(zLevel: 1),
+                  ),
+                  ActionChip(
+                    key: const Key('cue_tip_chip_up_2'),
                     label: const Text('Trên 2'),
                     onPressed: () => _setLevel(zLevel: 2),
                   ),
                   ActionChip(
+                    key: const Key('cue_tip_chip_up_3'),
+                    label: const Text('Trên 3'),
+                    onPressed: () => _setLevel(zLevel: 3),
+                  ),
+                  ActionChip(
+                    key: const Key('cue_tip_chip_up_4'),
                     label: const Text('Trên 4'),
                     onPressed: () => _setLevel(zLevel: 4),
                   ),
                 ],
               ),
-              const SizedBox(height: 8.0),
+              const SizedBox(height: 10.0),
 
               // Nút về tâm
               OutlinedButton.icon(
@@ -963,11 +1177,7 @@ class _CueTipDialogState extends State<CueTipDialog> {
         ),
         FilledButton(
           key: const Key('cue_tip_apply_button'),
-          onPressed: () {
-            // Chỉ cập nhật tipXMm, tipZMm, tipDiameterMm mà không đổi độ dày, má chạm, hay đường bi!
-            widget.onApply(_current);
-            Navigator.of(context).pop();
-          },
+          onPressed: canApply ? _apply : null,
           child: const Text('Áp dụng'),
         ),
       ],

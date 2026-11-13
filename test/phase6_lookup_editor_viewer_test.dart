@@ -1297,5 +1297,292 @@ void main() {
       expect(appliedForce!.forceText, 'Trô vừa tay');
       expect(appliedForce!.forceDisplay, '100% (Trô vừa tay)');
     });
+
+    testWidgets('9. Nghiệm thu hoàn tất Dialog Ép phê Phase 6A: Kiểm tra X/Z, chọn nhanh 4 mức, không đổi độ dày & SQLite round-trip',
+        (WidgetTester tester) async {
+      StrokeParameters? appliedTip;
+
+      Future<void> openDialog(StrokeParameters initial) async {
+        appliedTip = null;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Builder(
+                builder: (ctx) => Center(
+                  child: ElevatedButton(
+                    key: const Key('open_tip_dialog_btn'),
+                    onPressed: () {
+                      showDialog<void>(
+                        context: ctx,
+                        builder: (_) => CueTipDialog(
+                          initialStroke: initial,
+                          onApply: (updated) => appliedTip = updated,
+                        ),
+                      );
+                    },
+                    child: const Text('Mở dialog'),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('open_tip_dialog_btn')));
+        await tester.pumpAndSettle();
+      }
+
+      const baseStroke = StrokeParameters(
+        thicknessMode: HitThicknessMode.twelfths,
+        twelfthCount: 8,
+        hitSide: HitSide.left,
+        isFullFace: false,
+        tipXMm: 0.0,
+        tipZMm: 0.0,
+        forcePercent: 65,
+        forceText: 'Lực vừa',
+      );
+
+      // --- PHẦN 1: Kiểm tra ô X/Z (3,84; rỗng; abc; NaN; Infinity; ngoài miền) ---
+
+      // 1.1 Chuẩn hóa dấu phẩy thập phân: "3,84" -> 3.84
+      await openDialog(baseStroke);
+      await tester.enterText(find.byKey(const Key('cue_tip_x_input')), '3,84');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('cue_tip_normalization_notice')), findsOneWidget);
+      // Nút Áp dụng vẫn bấm được vì dấu phẩy hợp lệ
+      await tester.tap(find.byKey(const Key('cue_tip_apply_button')));
+      await tester.pumpAndSettle();
+      expect(appliedTip, isNotNull);
+      expect(appliedTip!.tipXMm, closeTo(3.84, 1e-4));
+      // Số hiển thị sau áp dụng khớp dữ liệu được lưu
+      expect(appliedTip!.horizontalTipLabel, contains('3.84 mm'));
+
+      // 1.2 Từ chối rỗng bằng lỗi tại trường & chặn Áp dụng
+      await openDialog(baseStroke);
+      await tester.enterText(find.byKey(const Key('cue_tip_x_input')), '');
+      await tester.pumpAndSettle();
+      expect(find.text('Không được để trống'), findsOneWidget);
+      // Nút Áp dụng bị disabled
+      final applyBtnEmpty = tester.widget<FilledButton>(find.byKey(const Key('cue_tip_apply_button')));
+      expect(applyBtnEmpty.onPressed, isNull);
+      await tester.tap(find.byKey(const Key('cue_tip_cancel_button')));
+      await tester.pumpAndSettle();
+      expect(appliedTip, isNull); // Hủy giữ nguyên thông số
+
+      // 1.3 Từ chối chữ "abc"
+      await openDialog(baseStroke);
+      await tester.enterText(find.byKey(const Key('cue_tip_x_input')), 'abc');
+      await tester.pumpAndSettle();
+      expect(find.text('Vui lòng nhập số hợp lệ'), findsOneWidget);
+      final applyBtnAbc = tester.widget<FilledButton>(find.byKey(const Key('cue_tip_apply_button')));
+      expect(applyBtnAbc.onPressed, isNull);
+
+      // 1.4 Từ chối NaN
+      await tester.enterText(find.byKey(const Key('cue_tip_x_input')), 'NaN');
+      await tester.pumpAndSettle();
+      expect(find.text('Không chấp nhận giá trị NaN'), findsOneWidget);
+      final applyBtnNan = tester.widget<FilledButton>(find.byKey(const Key('cue_tip_apply_button')));
+      expect(applyBtnNan.onPressed, isNull);
+
+      // 1.5 Từ chối Infinity
+      await tester.enterText(find.byKey(const Key('cue_tip_x_input')), 'Infinity');
+      await tester.pumpAndSettle();
+      expect(find.text('Không chấp nhận giá trị Infinity'), findsOneWidget);
+      final applyBtnInf = tester.widget<FilledButton>(find.byKey(const Key('cue_tip_apply_button')));
+      expect(applyBtnInf.onPressed, isNull);
+
+      // 1.6 Từ chối ngoài miền mặt bi (> 29.75 mm)
+      await tester.enterText(find.byKey(const Key('cue_tip_x_input')), '35');
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Vượt quá mặt bi'), findsOneWidget);
+      final applyBtnOver = tester.widget<FilledButton>(find.byKey(const Key('cue_tip_apply_button')));
+      expect(applyBtnOver.onPressed, isNull);
+
+      // Khoảng cách vector kết hợp vượt quá 29.75 mm (X=25, Z=25 -> d=35.36 mm)
+      await tester.enterText(find.byKey(const Key('cue_tip_x_input')), '25');
+      await tester.enterText(find.byKey(const Key('cue_tip_z_input')), '25');
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Khoảng cách đến tâm'), findsOneWidget);
+      final applyBtnVecOver = tester.widget<FilledButton>(find.byKey(const Key('cue_tip_apply_button')));
+      expect(applyBtnVecOver.onPressed, isNull);
+
+      await tester.tap(find.byKey(const Key('cue_tip_cancel_button')));
+      await tester.pumpAndSettle();
+
+      // --- PHẦN 2: Bổ sung chọn nhanh đủ 4 mức (Trái/Phải 1..4, Trên/Dưới 1..4, Tâm) ---
+      await openDialog(baseStroke);
+
+      // Kiểm tra đầy đủ các chip Ngang
+      expect(find.byKey(const Key('cue_tip_chip_left_4')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_left_3')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_left_2')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_left_1')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_x_center')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_right_1')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_right_2')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_right_3')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_right_4')), findsOneWidget);
+
+      // Bấm Phải 1 -> mức 1 chuẩn xác theo CueTipConvention (3.84375 mm)
+      await tester.tap(find.byKey(const Key('cue_tip_chip_right_1')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('cue_tip_x_summary')), findsOneWidget);
+      expect(find.textContaining('Phải mức 1.0 (3.84 mm)'), findsOneWidget);
+
+      // Bấm Phải 3 -> mức 3 (11.53125 mm)
+      await tester.tap(find.byKey(const Key('cue_tip_chip_right_3')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Phải mức 3.0 (11.53 mm)'), findsOneWidget);
+
+      // Bấm Trái 4 -> mức -4 (-15.375 mm)
+      await tester.tap(find.byKey(const Key('cue_tip_chip_left_4')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Trái mức 4.0 (15.38 mm)'), findsOneWidget);
+
+      // Kiểm tra đầy đủ các chip Đứng
+      expect(find.byKey(const Key('cue_tip_chip_down_4')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_down_3')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_down_2')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_down_1')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_z_center')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_up_1')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_up_2')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_up_3')), findsOneWidget);
+      expect(find.byKey(const Key('cue_tip_chip_up_4')), findsOneWidget);
+
+      // Bấm Trên 2 -> mức 2 (7.6875 mm)
+      await tester.tap(find.byKey(const Key('cue_tip_chip_up_2')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Trên mức 2.0 (7.69 mm)'), findsOneWidget);
+
+      // Bấm Dưới 3 -> mức -3 (-11.53125 mm)
+      await tester.tap(find.byKey(const Key('cue_tip_chip_down_3')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Dưới mức 3.0 (11.53 mm)'), findsOneWidget);
+
+      // Bấm nút Về chính tâm bi (0, 0)
+      await tester.tap(find.byKey(const Key('cue_tip_reset_center_button')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Ngang (X): Tâm (0)'), findsOneWidget);
+      expect(find.textContaining('Đứng (Z): Tâm (0)'), findsOneWidget);
+
+      // Chọn Phải 2 (7.6875) & Trên 1 (3.84375) và Áp dụng
+      await tester.tap(find.byKey(const Key('cue_tip_chip_right_2')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('cue_tip_chip_up_1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('cue_tip_apply_button')));
+      await tester.pumpAndSettle();
+
+      expect(appliedTip, isNotNull);
+      // Giá trị chính xác theo CueTipConvention, không lấy số đã làm tròn
+      expect(appliedTip!.tipXMm, closeTo(7.6875, 1e-5));
+      expect(appliedTip!.tipZMm, closeTo(3.84375, 1e-5));
+
+      // --- PHẦN 3: Không đổi độ dày, má chạm, lực hoặc đường bi ---
+      expect(appliedTip!.thicknessMode, HitThicknessMode.twelfths);
+      expect(appliedTip!.twelfthCount, 8);
+      expect(appliedTip!.hitSide, HitSide.left);
+      expect(appliedTip!.isFullFace, isFalse);
+      expect(appliedTip!.forcePercent, 65);
+      expect(appliedTip!.forceText, 'Lực vừa');
+
+      // --- PHẦN 4: Kiểm tra scene riêng qua luồng editor → SQLite → mở lại ---
+      final dbPath = p.join(tempDir.path, 'tip_roundtrip.db');
+      final repo = SqliteNotebookRepository(dbPath: dbPath);
+
+      await tester.runAsync(() async {
+        await repo.initialize();
+        final db = repo.dbForTesting!;
+
+        // Tạo scene có thông số ép phê tùy chỉnh
+        const customTipStroke = StrokeParameters(
+          thicknessMode: HitThicknessMode.twelfths,
+          twelfthCount: 9,
+          hitSide: HitSide.right,
+          tipXMm: 11.53125, // Phải mức 3
+          tipZMm: -7.6875,  // Dưới mức 2
+          forcePercent: 85,
+          forceText: 'Trô mạnh bén',
+        );
+
+        final scene1 = DiagramScene.defaultInitial(id: 'scene_with_tip').copyWith(
+          strokeParameters: customTipStroke,
+        );
+
+        // Scene 2 không có thông số riêng (strokeParameters == null)
+        final scene2 = DiagramScene.defaultInitial(id: 'scene_without_tip');
+
+        final nowIso = DateTime.utc(2026, 11, 13, 5, 0).toIso8601String();
+        await db.insert('articles', {
+          'id': 'art_tip_test',
+          'code': 'KT-TIP',
+          'kind': 'technique',
+          'title': 'Kỹ thuật ép phê chính xác',
+          'summary': 'Tóm tắt ép phê',
+          'primary_group_id': 'tech_draw',
+          'tags_json': '[]',
+          'difficulty': 'advanced',
+          'goal': '',
+          'content': 'Bài kiểm tra lưu trữ ép phê qua SQLite',
+          'steps_json': '[]',
+          'common_mistakes': '',
+          'source': null,
+          'author': null,
+          'source_page': null,
+          'source_url': null,
+          'is_draft': 0,
+          'stroke_params_json': '{}',
+          'created_at': nowIso,
+          'updated_at': nowIso,
+          'is_favorite': 0,
+          'practice_status': 'not_started',
+          'related_article_ids_json': '[]',
+        });
+
+        await db.insert('article_diagrams', {
+          'id': 'diag_1',
+          'article_id': 'art_tip_test',
+          'sort_order': 0,
+          'caption': 'Mức 3 phải, mức 2 dưới',
+          'scene_json': jsonEncode(scene1.toJson()),
+        });
+
+        await db.insert('article_diagrams', {
+          'id': 'diag_2',
+          'article_id': 'art_tip_test',
+          'sort_order': 1,
+          'caption': 'Không có thông số riêng',
+          'scene_json': jsonEncode(scene2.toJson()),
+        });
+
+        // Tải lại bộ đệm từ database SQLite
+        await repo.reloadCacheForTesting();
+
+        // Đọc lại từ SQLite qua getArticleById
+        final retrieved = repo.getArticleById('art_tip_test');
+        expect(retrieved, isNotNull);
+        expect(retrieved!.diagrams.length, 2);
+
+        // Kiểm tra sơ đồ 1: ép phê và các thông số giữ nguyên vẹn
+        final loadedStroke1 = retrieved.diagrams[0].scene.strokeParameters;
+        expect(loadedStroke1, isNotNull);
+        expect(loadedStroke1!.tipXMm, closeTo(11.53125, 1e-4));
+        expect(loadedStroke1.tipZMm, closeTo(-7.6875, 1e-4));
+        expect(loadedStroke1.horizontalTipLabel, contains('Phải mức 3.0 (11.53 mm)'));
+        expect(loadedStroke1.verticalTipLabel, contains('Dưới mức 2.0 (7.69 mm)'));
+        expect(loadedStroke1.forcePercent, 85);
+        expect(loadedStroke1.forceText, 'Trô mạnh bén');
+        expect(loadedStroke1.twelfthCount, 9);
+        expect(loadedStroke1.hitSide, HitSide.right);
+
+        // Kiểm tra sơ đồ 2: độc lập, không bị sơ đồ 1 ghi đè hay làm mất tính nullable
+        expect(retrieved.diagrams[1].scene.hasExplicitStrokeParameters, isFalse);
+        expect(retrieved.diagrams[1].scene.strokeParameters, isNull);
+      });
+
+      await tester.runAsync(() => repo.close());
+    });
   });
 }
