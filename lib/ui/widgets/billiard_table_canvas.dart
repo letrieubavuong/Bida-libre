@@ -8,6 +8,7 @@ import '../../geometry/table_constants.dart';
 import '../../geometry/table_geometry.dart';
 import '../../models/models.dart';
 import '../../state/table_editor_controller.dart';
+import 'table_gesture_coordinator.dart';
 
 enum _ActiveDragKind { ball, vertex, controlHandle, annotation }
 
@@ -72,6 +73,7 @@ class BilliardTableCanvas extends StatefulWidget {
   final ValueChanged<DiagramPoint> onDrawPointPlaced;
 
   final TransformationController? transformationController;
+  final TableGestureCoordinator? gestureCoordinator;
 
   const BilliardTableCanvas({
     super.key,
@@ -112,13 +114,14 @@ class BilliardTableCanvas extends StatefulWidget {
     this.onAnnotationPlaceTapped,
     required this.onDrawPointPlaced,
     this.transformationController,
+    this.gestureCoordinator,
   });
 
   @override
-  State<BilliardTableCanvas> createState() => _BilliardTableCanvasState();
+  State<BilliardTableCanvas> createState() => BilliardTableCanvasState();
 }
 
-class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
+class BilliardTableCanvasState extends State<BilliardTableCanvas> {
   int? _activePointerId;
   int? _activeDragToken;
   _ActiveDragKind? _activeDragKind;
@@ -128,12 +131,36 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
   int _activePointersOnCanvas = 0;
 
   @override
+  void initState() {
+    super.initState();
+    widget.gestureCoordinator?.addListener(_handleCoordinatorChange);
+  }
+
+  @override
   void didUpdateWidget(covariant BilliardTableCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.gestureCoordinator != widget.gestureCoordinator) {
+      oldWidget.gestureCoordinator?.removeListener(_handleCoordinatorChange);
+      widget.gestureCoordinator?.addListener(_handleCoordinatorChange);
+    }
     if (widget.toolMode != EditorToolMode.drawPolyline &&
         (_drawPointerId != null || _liveDrawCursor != null)) {
       _drawPointerId = null;
       _liveDrawCursor = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.gestureCoordinator?.removeListener(_handleCoordinatorChange);
+    super.dispose();
+  }
+
+  void _handleCoordinatorChange() {
+    if (widget.gestureCoordinator?.isViewportGestureActive == true) {
+      if (_activePointerId != null || _drawPointerId != null) {
+        cancelCurrentDrag();
+      }
     }
   }
 
@@ -165,6 +192,17 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
     );
   }
 
+  void cancelCurrentDrag() {
+    _cancelCurrentSelectDrag();
+    if (_drawPointerId != null) {
+      _drawPointerId = null;
+      setState(() {
+        _liveDrawCursor = null;
+      });
+      widget.gestureCoordinator?.notifyDrawingEnded();
+    }
+  }
+
   void _cancelCurrentSelectDrag() {
     final token = _activeDragToken;
     final kind = _activeDragKind;
@@ -183,12 +221,14 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
           widget.onAnnotationDragCancel?.call(token);
       }
     }
+    widget.gestureCoordinator?.notifyDragEnded();
   }
 
   Offset _transformLocalPosition(Offset screenPos) {
-    final tc = widget.transformationController;
-    if (tc == null) return screenPos;
-    return tc.toScene(screenPos);
+    // Tọa độ event.localPosition bên trong child đã qua phép nghịch đảo của
+    // InteractiveViewer, đây chính là tọa độ cục bộ của BilliardTableCanvas.
+    // Tuyệt đối không gọi toScene lần 2 để tránh biến đổi ngược hai lần.
+    return screenPos;
   }
 
   @override
@@ -204,23 +244,19 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
         return Listener(
           behavior: HitTestBehavior.opaque,
           onPointerDown: (event) {
+            if (widget.gestureCoordinator?.isViewportGestureActive == true) {
+              return;
+            }
             _activePointersOnCanvas++;
             if (_activePointersOnCanvas >= 2) {
-              if (_activePointerId != null) {
-                _cancelCurrentSelectDrag();
-              }
-              if (_drawPointerId != null) {
-                _drawPointerId = null;
-                setState(() {
-                  _liveDrawCursor = null;
-                });
-              }
+              cancelCurrentDrag();
               return;
             }
             final effectiveLocalPos = _transformLocalPosition(event.localPosition);
             if (widget.toolMode == EditorToolMode.drawPolyline) {
               if (_drawPointerId != null) return;
               _drawPointerId = event.pointer;
+              widget.gestureCoordinator?.notifyDrawingStarted();
               final raw = mapper.screenToDiagram(effectiveLocalPos);
               setState(() {
                 _liveDrawCursor = _snapDraftCursor(raw);
@@ -236,7 +272,7 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
 
             // Chế độ Chọn / Di chuyển
             if (_activePointerId != null) {
-              _cancelCurrentSelectDrag();
+              cancelCurrentDrag();
               return;
             }
 
@@ -268,6 +304,7 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
                   _activePointerId = event.pointer;
                   _activeDragToken = token;
                   _activeDragKind = _ActiveDragKind.controlHandle;
+                  widget.gestureCoordinator?.notifyDragStarted();
                 }
                 return;
               }
@@ -282,6 +319,7 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
                   _activePointerId = event.pointer;
                   _activeDragToken = token;
                   _activeDragKind = _ActiveDragKind.vertex;
+                  widget.gestureCoordinator?.notifyDragStarted();
                 }
                 return;
               }
@@ -302,6 +340,7 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
                 _activePointerId = event.pointer;
                 _activeDragToken = token;
                 _activeDragKind = _ActiveDragKind.ball;
+                widget.gestureCoordinator?.notifyDragStarted();
               } else if (ballHit.locked) {
                 widget.onLockedBallTouched?.call(ballHit);
               }
@@ -358,6 +397,9 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
             }
           },
           onPointerMove: (event) {
+            if (widget.gestureCoordinator?.isViewportGestureActive == true) {
+              return;
+            }
             final effectiveLocalPos = _transformLocalPosition(event.localPosition);
             if (widget.toolMode == EditorToolMode.drawPolyline) {
               if (event.pointer != _drawPointerId) return;
@@ -393,11 +435,15 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
             if (_activePointersOnCanvas > 0) {
               _activePointersOnCanvas--;
             }
+            if (widget.gestureCoordinator?.isViewportGestureActive == true) {
+              return;
+            }
             final effectiveLocalPos = _transformLocalPosition(event.localPosition);
             if (widget.toolMode == EditorToolMode.drawPolyline) {
               if (event.pointer != _drawPointerId) return;
               final raw = mapper.screenToDiagram(effectiveLocalPos);
               _drawPointerId = null;
+              widget.gestureCoordinator?.notifyDrawingEnded();
               setState(() {
                 _liveDrawCursor = null;
               });
@@ -411,6 +457,7 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
             _activePointerId = null;
             _activeDragToken = null;
             _activeDragKind = null;
+            widget.gestureCoordinator?.notifyDragEnded();
             if (token != null && kind != null) {
               switch (kind) {
                 case _ActiveDragKind.ball:
@@ -431,6 +478,7 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
             if (widget.toolMode == EditorToolMode.drawPolyline) {
               if (event.pointer != _drawPointerId) return;
               _drawPointerId = null;
+              widget.gestureCoordinator?.notifyDrawingEnded();
               setState(() {
                 _liveDrawCursor = null;
               });
@@ -438,7 +486,7 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
             }
 
             if (event.pointer != _activePointerId) return;
-            _cancelCurrentSelectDrag();
+            cancelCurrentDrag();
           },
           child: CustomPaint(
             size: size,
@@ -477,6 +525,7 @@ class _BilliardTableCanvasState extends State<BilliardTableCanvas> {
         _activePointerId = pointerId;
         _activeDragToken = token;
         _activeDragKind = _ActiveDragKind.annotation;
+        widget.gestureCoordinator?.notifyDragStarted();
       } else if (ann.locked) {
         widget.onLockedAnnotationTouched?.call(ann);
       }

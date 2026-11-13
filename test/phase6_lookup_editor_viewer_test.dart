@@ -1300,6 +1300,11 @@ void main() {
 
     testWidgets('9. Nghiệm thu hoàn tất Dialog Ép phê Phase 6A: Kiểm tra X/Z, chọn nhanh 4 mức, không đổi độ dày & SQLite round-trip',
         (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
       StrokeParameters? appliedTip;
 
       Future<void> openDialog(StrokeParameters initial) async {

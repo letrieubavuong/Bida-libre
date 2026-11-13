@@ -7,6 +7,7 @@ import '../../repositories/scene_storage.dart';
 import '../../state/table_editor_controller.dart';
 import '../widgets/billiard_table_canvas.dart';
 import '../widgets/stroke_parameter_widgets.dart';
+import '../widgets/table_gesture_coordinator.dart';
 
 /// Màn hình Dựng thế bi toàn vùng (Phase 1–3 + tích hợp biên tập sơ đồ bài viết Phase 4A):
 /// - Canvas bàn bi phủ toàn vùng editor trong Stack, giữ đúng tỉ lệ 1:2 khi đóng/mở công cụ nổi hay bàn phím.
@@ -43,6 +44,8 @@ class _TableStageScreenState extends State<TableStageScreen> {
 
   final TransformationController _transformationController =
       TransformationController();
+  final TableGestureCoordinator _gestureCoordinator =
+      TableGestureCoordinator();
 
   Offset? _leftToolbarOffset;
   Offset? _rightToolbarOffset;
@@ -115,6 +118,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
     _yFocus.dispose();
     _coordinateErrorNotifier.dispose();
     _transformationController.dispose();
+    _gestureCoordinator.dispose();
     super.dispose();
   }
 
@@ -963,7 +967,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
 
               return Stack(
                 children: [
-                  // LỚP 0: Canvas toàn vùng trong InteractiveViewer hỗ trợ zoom / pan hai ngón
+                  // LỚP 0: Canvas toàn vùng trong InteractiveViewer hỗ trợ zoom / pan hai ngón có phân quyền gesture rõ ràng
                   Positioned.fill(
                     child: Padding(
                       padding: const EdgeInsets.all(8.0),
@@ -971,17 +975,31 @@ class _TableStageScreenState extends State<TableStageScreen> {
                         absorbing: _controller.isLoading ||
                             _isDraggingLeftToolbar ||
                             _isDraggingRightToolbar,
-                        child: InteractiveViewer(
-                          transformationController: _transformationController,
-                          minScale: 0.5,
-                          maxScale: 4.0,
-                          panAxis: PanAxis.free,
-                          boundaryMargin: const EdgeInsets.all(120.0),
-                          child: BilliardTableCanvas(
-                            key: const Key('billiard_table_canvas'),
-                            transformationController: _transformationController,
-                          scene: _controller.scene,
-                          toolMode: _controller.toolMode,
+                        child: AnimatedBuilder(
+                          animation: _gestureCoordinator,
+                          builder: (context, _) {
+                            return Listener(
+                              behavior: HitTestBehavior.translucent,
+                              onPointerDown: _gestureCoordinator.onPointerDown,
+                              onPointerMove: _gestureCoordinator.onPointerMove,
+                              onPointerUp: _gestureCoordinator.onPointerUp,
+                              onPointerCancel: _gestureCoordinator.onPointerCancel,
+                              child: InteractiveViewer(
+                                transformationController:
+                                    _transformationController,
+                                minScale: 0.5,
+                                maxScale: 4.0,
+                                panAxis: PanAxis.free,
+                                boundaryMargin: const EdgeInsets.all(120.0),
+                                panEnabled: _gestureCoordinator.panEnabled,
+                                scaleEnabled: _gestureCoordinator.scaleEnabled,
+                                child: BilliardTableCanvas(
+                                  key: const Key('billiard_table_canvas'),
+                                  gestureCoordinator: _gestureCoordinator,
+                                  transformationController:
+                                      _transformationController,
+                                  scene: _controller.scene,
+                                  toolMode: _controller.toolMode,
                           selectedBallId: _controller.selectedBallId,
                           selectedPathId: _controller.selectedPathId,
                           selectedVertexIndex: _controller.selectedVertexIndex,
@@ -1103,9 +1121,12 @@ class _TableStageScreenState extends State<TableStageScreen> {
                           onDrawPointPlaced: _controller.addDraftPoint,
                         ),
                       ),
-                    ),
-                  ),
+                    );
+                  },
                 ),
+              ),
+            ),
+          ),
 
                   // Thanh tiến trình mảnh khi đang tải từ kho
                   if (_controller.isLoading)
@@ -1510,6 +1531,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
                       _leftToolbarOffset = null;
                       _rightToolbarOffset = null;
                     });
+                    _gestureCoordinator.reset();
                     _showSnack('Đã căn chỉnh bàn vừa vùng nhìn.');
                   },
                 ),
