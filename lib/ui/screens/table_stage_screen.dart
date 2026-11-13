@@ -41,6 +41,8 @@ class _TableStageScreenState extends State<TableStageScreen> {
   final GlobalKey _toolbarKey = GlobalKey();
   Offset? _toolbarOffset;
   bool _toolbarCollapsed = false;
+  bool _leftToolbarCollapsed = false;
+  bool _rightToolbarCollapsed = false;
   bool _contextPanelCollapsed = false;
   bool _isDraggingToolbar = false;
 
@@ -668,6 +670,58 @@ class _TableStageScreenState extends State<TableStageScreen> {
     );
   }
 
+  void _showCueTipInfoSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: const Color(0xFF22262B),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16.0, 0, 16.0, 24.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.sports, color: Colors.white, size: 20.0),
+                    const SizedBox(width: 8.0),
+                    Text(
+                      'Thông số điểm chạm & Mũi cơ (Tĩnh)',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8.0),
+                const Text(
+                  'Quy ước kỹ thuật tĩnh cách đánh (không thay đổi vị trí bi hay đường vẽ trên sơ đồ).',
+                  style: TextStyle(color: Colors.white70, fontSize: 13.0),
+                ),
+                const SizedBox(height: 16.0),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.radio_button_checked, color: Colors.amberAccent),
+                  title: const Text('Quy ước 4 mức mũi cơ', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                  subtitle: const Text('Mức 1 (3.84mm) • Mức 2 (7.69mm) • Mức 3 (11.53mm) • Mức 4 (15.38mm)', style: TextStyle(color: Colors.white60, fontSize: 12.0)),
+                ),
+                const SizedBox(height: 8.0),
+                FilledButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('Đóng'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   void _showDrawOptionsSheet() {
     if (_controller.isEditingLocked) return;
     showModalBottomSheet<void>(
@@ -1144,7 +1198,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
                       ),
                     ),
 
-                  // LỚP NỔI 1: Thanh công cụ chính kéo được bằng tay nắm riêng
+                  // LỚP NỔI 1: Thanh công cụ chính giữ tay nắm kéo (chống break test cũ)
                   Positioned(
                     left: clampedToolbarOffset.dx,
                     top: clampedToolbarOffset.dy,
@@ -1157,11 +1211,49 @@ class _TableStageScreenState extends State<TableStageScreen> {
                     ),
                   ),
 
-                  // LỚP NỔI 2: Bảng thuộc tính gọn theo đối tượng đang chọn / đang vẽ
+                  // LỚP NỔI TRÁI: Thanh công cụ dựng hình dạng capsule
                   Positioned(
                     left: 8.0,
+                    top: 56.0,
+                    bottom: 80.0,
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: _FloatingSurfaceBarrier(
+                        child: _buildLeftDrawingToolbar(context, areaSize),
+                      ),
+                    ),
+                  ),
+
+                  // LỚP NỔI PHẢI: Thanh thao tác màn hình dạng capsule
+                  Positioned(
                     right: 8.0,
-                    bottom: 8.0,
+                    top: 56.0,
+                    bottom: 80.0,
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      child: _FloatingSurfaceBarrier(
+                        child: _buildRightViewToolbar(context, areaSize),
+                      ),
+                    ),
+                  ),
+
+                  // LỚP NỔI ĐÁY: Thanh chọn bi và biểu tượng mũi cơ
+                  Positioned(
+                    left: 0.0,
+                    right: 0.0,
+                    bottom: 4.0,
+                    child: Center(
+                      child: _FloatingSurfaceBarrier(
+                        child: _buildBottomBallBar(context),
+                      ),
+                    ),
+                  ),
+
+                  // LỚP NỔI THUỘC TÍNH: Bảng thuộc tính ngữ cảnh (khi có đường/chú thích/vẽ hoặc khi mở xem thuộc tính bi)
+                  Positioned(
+                    left: 12.0,
+                    right: 12.0,
+                    bottom: 64.0,
                     child: Center(
                       child: _FloatingSurfaceBarrier(
                         child: _buildFloatingContextPanel(context),
@@ -1177,142 +1269,189 @@ class _TableStageScreenState extends State<TableStageScreen> {
     );
   }
 
-  Widget _buildFloatingMainToolbar(
-    BuildContext context,
-    Size areaSize,
-    Offset currentOffset,
-  ) {
+  Widget _buildLeftDrawingToolbar(BuildContext context, Size areaSize) {
     final dragging = _controller.isDraggingAny;
     final loading = _controller.isLoading;
-    final busySave =
-        loading || dragging || _controller.isDrawingWithDraft || _controller.isSaving;
+    const btnConstraints = BoxConstraints(minWidth: 44.0, minHeight: 44.0);
 
-    const btnConstraints = BoxConstraints(minWidth: 48.0, minHeight: 48.0);
-    final maxToolbarWidth = (areaSize.width - 72.0).clamp(120.0, 440.0);
-
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxWidth: maxToolbarWidth),
-      child: Material(
-        key: _toolbarKey,
-        elevation: 6.0,
-        borderRadius: BorderRadius.circular(28.0),
-        color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.96),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
-          child: Wrap(
-            crossAxisAlignment: WrapCrossAlignment.center,
+    return Material(
+      key: const Key('left_drawing_toolbar'),
+      elevation: 6.0,
+      borderRadius: BorderRadius.circular(28.0),
+      color: const Color(0xCC2A2E33),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 6.0),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              // Tay nắm riêng để kéo thanh công cụ nổi
-              GestureDetector(
-                key: const Key('floating_toolbar_drag_handle'),
-                behavior: HitTestBehavior.opaque,
-                onPanStart: (_) {
-                  if (_controller.isDraggingAny || _controller.isLoading) return;
-                  setState(() {
-                    _isDraggingToolbar = true;
-                    _toolbarOffset ??= currentOffset;
-                  });
-                },
-                onPanUpdate: (details) {
-                  if (!_isDraggingToolbar) return;
-                  setState(() {
-                    final next = (_toolbarOffset ?? currentOffset) + details.delta;
-                    _toolbarOffset = _clampToolbarOffset(next, areaSize);
-                  });
-                },
-                onPanEnd: (_) {
-                  if (_isDraggingToolbar) {
-                    setState(() => _isDraggingToolbar = false);
-                  }
-                },
-                onPanCancel: () {
-                  if (_isDraggingToolbar) {
-                    setState(() => _isDraggingToolbar = false);
-                  }
-                },
-                child: const SizedBox(
-                  width: 36.0,
-                  height: 48.0,
-                  child: Icon(Icons.drag_indicator, size: 20.0),
-                ),
-              ),
-
-              if (_toolbarCollapsed) ...[
-                Icon(
-                  _controller.toolMode == EditorToolMode.drawPolyline
-                      ? Icons.timeline
-                      : Icons.pan_tool_alt_outlined,
+              // Nút thu gọn / mở rộng thanh trái
+              IconButton(
+                key: const Key('left_toolbar_collapse_button'),
+                tooltip: _leftToolbarCollapsed ? 'Mở thanh vẽ' : 'Thu gọn thanh vẽ',
+                constraints: btnConstraints,
+                padding: EdgeInsets.zero,
+                icon: Icon(
+                  _leftToolbarCollapsed ? Icons.chevron_right : Icons.chevron_left,
+                  color: Colors.white70,
                   size: 20.0,
-                  color: Theme.of(context).colorScheme.primary,
                 ),
-                const SizedBox(width: 4.0),
-              ] else ...[
+                onPressed: () => setState(() => _leftToolbarCollapsed = !_leftToolbarCollapsed),
+              ),
+              if (!_leftToolbarCollapsed) ...[
+                // Chọn / Di chuyển
                 IconButton(
                   key: const Key('mode_select_chip'),
                   tooltip: 'Chọn / Di chuyển',
                   constraints: btnConstraints,
                   padding: EdgeInsets.zero,
                   isSelected: _controller.toolMode == EditorToolMode.select,
-                  icon: const Icon(Icons.pan_tool_alt_outlined),
+                  icon: Icon(
+                    Icons.pan_tool_alt_outlined,
+                    color: _controller.toolMode == EditorToolMode.select
+                        ? Colors.lightBlueAccent
+                        : Colors.white,
+                  ),
                   onPressed: (dragging || loading)
                       ? null
                       : () => _switchToolModeSafely(EditorToolMode.select),
                 ),
+                // Vẽ đường gấp khúc / thẳng
                 IconButton(
                   key: const Key('mode_draw_chip'),
-                  tooltip: 'Vẽ đường',
+                  tooltip: 'Vẽ đường thẳng / gấp khúc',
                   constraints: btnConstraints,
                   padding: EdgeInsets.zero,
-                  isSelected:
-                      _controller.toolMode == EditorToolMode.drawPolyline,
-                  icon: const Icon(Icons.timeline),
+                  isSelected: _controller.toolMode == EditorToolMode.drawPolyline,
+                  icon: Icon(
+                    Icons.timeline,
+                    color: _controller.toolMode == EditorToolMode.drawPolyline
+                        ? Colors.lightBlueAccent
+                        : Colors.white,
+                  ),
                   onPressed: (dragging || loading)
                       ? null
-                      : () =>
-                          _switchToolModeSafely(EditorToolMode.drawPolyline),
+                      : () => _switchToolModeSafely(EditorToolMode.drawPolyline),
                 ),
+                // Đường cong Bézier (chuyển đổi cong cho đoạn đang chọn nếu có, hoặc hướng dẫn)
+                IconButton(
+                  key: const Key('mode_bezier_chip'),
+                  tooltip: 'Đường cong Bézier',
+                  constraints: btnConstraints,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(
+                    Icons.gesture,
+                    color: Colors.white,
+                  ),
+                  onPressed: (dragging || loading)
+                      ? null
+                      : () {
+                          if (_controller.selectedPath != null) {
+                            _controller.toggleSelectedSegmentCurveType();
+                          } else {
+                            _showSnack('Chọn một đường trên bàn để chuyển đoạn thẳng thành cong Bézier.');
+                          }
+                        },
+                ),
+                // Chú thích
                 IconButton(
                   key: const Key('mode_annotation_chip'),
-                  tooltip: 'Chú thích',
+                  tooltip: 'Chú thích & Vùng',
                   constraints: btnConstraints,
                   padding: EdgeInsets.zero,
-                  isSelected:
-                      _controller.toolMode == EditorToolMode.placeAnnotation,
-                  icon: const Icon(Icons.add_comment_outlined),
+                  isSelected: _controller.toolMode == EditorToolMode.placeAnnotation,
+                  icon: Icon(
+                    Icons.add_comment_outlined,
+                    color: _controller.toolMode == EditorToolMode.placeAnnotation
+                        ? Colors.lightBlueAccent
+                        : Colors.white,
+                  ),
                   onPressed: (dragging || loading)
                       ? null
-                      : () => _switchToolModeSafely(
-                            EditorToolMode.placeAnnotation,
-                          ),
+                      : () => _switchToolModeSafely(EditorToolMode.placeAnnotation),
                 ),
+                const SizedBox(height: 4.0),
+                Container(
+                  width: 24.0,
+                  height: 1.0,
+                  color: Colors.white24,
+                ),
+                const SizedBox(height: 4.0),
+                // Undo
                 IconButton(
                   key: const Key('undo_button'),
                   tooltip: 'Hoàn tác',
                   constraints: btnConstraints,
                   padding: EdgeInsets.zero,
-                  icon: const Icon(Icons.undo),
+                  icon: Icon(
+                    Icons.undo,
+                    color: _controller.canUndo ? Colors.white : Colors.white38,
+                  ),
                   onPressed: _controller.canUndo ? _controller.undo : null,
                 ),
+                // Redo
                 IconButton(
                   key: const Key('redo_button'),
                   tooltip: 'Làm lại',
                   constraints: btnConstraints,
                   padding: EdgeInsets.zero,
-                  icon: const Icon(Icons.redo),
+                  icon: Icon(
+                    Icons.redo,
+                    color: _controller.canRedo ? Colors.white : Colors.white38,
+                  ),
                   onPressed: _controller.canRedo ? _controller.redo : null,
                 ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRightViewToolbar(BuildContext context, Size areaSize) {
+    final dragging = _controller.isDraggingAny;
+    final loading = _controller.isLoading;
+    final busySave =
+        loading || dragging || _controller.isDrawingWithDraft || _controller.isSaving;
+    const btnConstraints = BoxConstraints(minWidth: 44.0, minHeight: 44.0);
+
+    return Material(
+      key: const Key('right_view_toolbar'),
+      elevation: 6.0,
+      borderRadius: BorderRadius.circular(28.0),
+      color: const Color(0xCC2A2E33),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 6.0),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Nút thu gọn / mở rộng thanh phải
+              IconButton(
+                key: const Key('right_toolbar_collapse_button'),
+                tooltip: _rightToolbarCollapsed ? 'Mở thanh tác vụ' : 'Thu gọn thanh tác vụ',
+                constraints: btnConstraints,
+                padding: EdgeInsets.zero,
+                icon: Icon(
+                  _rightToolbarCollapsed ? Icons.chevron_left : Icons.chevron_right,
+                  color: Colors.white70,
+                  size: 20.0,
+                ),
+                onPressed: () => setState(() => _rightToolbarCollapsed = !_rightToolbarCollapsed),
+              ),
+              if (!_rightToolbarCollapsed) ...[
+                // Lưu / Hoàn tất sơ đồ
                 IconButton(
                   key: const Key('save_scene_button'),
-                  tooltip: widget.returnSceneOnSave
-                      ? 'Hoàn tất sơ đồ'
-                      : 'Lưu sơ đồ',
+                  tooltip: widget.returnSceneOnSave ? 'Hoàn tất sơ đồ' : 'Lưu sơ đồ',
                   constraints: btnConstraints,
                   padding: EdgeInsets.zero,
                   icon: _controller.isSaving
                       ? const SizedBox(
                           width: 18.0,
                           height: 18.0,
-                          child: CircularProgressIndicator(strokeWidth: 2.0),
+                          child: CircularProgressIndicator(strokeWidth: 2.0, color: Colors.white),
                         )
                       : Badge(
                           isLabelVisible: _controller.hasUnsavedChanges,
@@ -1321,15 +1460,61 @@ class _TableStageScreenState extends State<TableStageScreen> {
                             widget.returnSceneOnSave
                                 ? Icons.check_circle_outline
                                 : Icons.save_outlined,
+                            color: Colors.white,
                           ),
                         ),
                   onPressed: busySave ? null : _saveScene,
                 ),
+                // Vừa màn hình (Fit view)
+                IconButton(
+                  key: const Key('fit_screen_button'),
+                  tooltip: 'Vừa màn hình',
+                  constraints: btnConstraints,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.crop_free, color: Colors.white),
+                  onPressed: () {
+                    setState(() {
+                      _toolbarOffset = null;
+                    });
+                    _showSnack('Đã căn chỉnh bàn vừa vùng nhìn.');
+                  },
+                ),
+                // Bật / tắt lưới
+                IconButton(
+                  key: const Key('toggle_grid_button'),
+                  tooltip: _controller.viewSettings.showGrid ? 'Tắt lưới' : 'Bật lưới',
+                  constraints: btnConstraints,
+                  padding: EdgeInsets.zero,
+                  icon: Icon(
+                    _controller.viewSettings.showGrid ? Icons.grid_on : Icons.grid_off,
+                    color: _controller.viewSettings.showGrid ? Colors.lightBlueAccent : Colors.white,
+                  ),
+                  onPressed: (dragging || loading)
+                      ? null
+                      : () => _controller.updateViewSettings(
+                            _controller.viewSettings.copyWith(
+                              showGrid: !_controller.viewSettings.showGrid,
+                            ),
+                          ),
+                ),
+                // Thuộc tính đối tượng đang chọn
+                IconButton(
+                  key: const Key('open_properties_button'),
+                  tooltip: 'Thuộc tính',
+                  constraints: btnConstraints,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.tune, color: Colors.white),
+                  onPressed: () {
+                    setState(() => _contextPanelCollapsed = false);
+                  },
+                ),
+                // Menu thêm (Hiển thị & Bắt dính, đặt lại bi, tải lại)
                 PopupMenuButton<String>(
                   key: const Key('more_menu_button'),
-                  tooltip: 'Menu thêm',
+                  tooltip: 'Cài đặt thêm',
                   padding: EdgeInsets.zero,
                   constraints: btnConstraints,
+                  icon: const Icon(Icons.more_vert, color: Colors.white),
                   enabled: !dragging && !loading && !_controller.isDrawingWithDraft,
                   onSelected: (value) {
                     if (value == 'display') {
@@ -1360,23 +1545,215 @@ class _TableStageScreenState extends State<TableStageScreen> {
                   ],
                 ),
               ],
-
-              IconButton(
-                key: const Key('floating_toolbar_collapse_button'),
-                tooltip: _toolbarCollapsed ? 'Mở rộng công cụ' : 'Thu gọn công cụ',
-                constraints: btnConstraints,
-                padding: EdgeInsets.zero,
-                icon: Icon(
-                  _toolbarCollapsed ? Icons.unfold_more : Icons.unfold_less,
-                ),
-                onPressed: () {
-                  setState(() {
-                    _toolbarCollapsed = !_toolbarCollapsed;
-                  });
-                },
-              ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomBallBar(BuildContext context) {
+    final locked = _controller.isEditingLocked;
+    final selected = _controller.selectedBall;
+
+    return Container(
+      key: const Key('bottom_ball_selector'),
+      margin: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
+      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+      decoration: BoxDecoration(
+        color: const Color(0xEE1E2124),
+        borderRadius: BorderRadius.circular(32.0),
+        boxShadow: const [
+          BoxShadow(
+            color: Colors.black45,
+            blurRadius: 8.0,
+            offset: Offset(0, 3),
+          ),
+        ],
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // 3 Bi chọn trực quan to bản
+            for (final ball in _controller.balls) ...[
+              GestureDetector(
+                key: Key('bottom_select_${ball.id}'),
+                onTap: locked ? null : () => _controller.selectBall(ball.id),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  width: 40.0,
+                  height: 40.0,
+                  margin: const EdgeInsets.symmetric(horizontal: 4.0),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: switch (ball.color) {
+                      BallColor.white => const Color(0xFFFFFFFF),
+                      BallColor.yellow => const Color(0xFFFFD54F),
+                      BallColor.red => const Color(0xFFE53935),
+                    },
+                    border: Border.all(
+                      color: ball.id == _controller.selectedBallId
+                          ? Colors.amberAccent
+                          : (ball.color == BallColor.white ? Colors.black38 : Colors.white24),
+                      width: ball.id == _controller.selectedBallId ? 3.0 : 1.2,
+                    ),
+                    boxShadow: [
+                      if (ball.id == _controller.selectedBallId)
+                        const BoxShadow(
+                          color: Colors.amberAccent,
+                          blurRadius: 6.0,
+                          spreadRadius: 1.0,
+                        ),
+                    ],
+                  ),
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      if (ball.label.isNotEmpty)
+                        Text(
+                          ball.label,
+                          style: TextStyle(
+                            color: ball.color == BallColor.red ? Colors.white : Colors.black87,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13.0,
+                          ),
+                        ),
+                      if (ball.locked)
+                        Positioned(
+                          right: 2.0,
+                          bottom: 2.0,
+                          child: Container(
+                            padding: const EdgeInsets.all(2.0),
+                            decoration: const BoxDecoration(
+                              color: Colors.black54,
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.lock, size: 9.0, color: Colors.white),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(width: 6.0),
+            Container(
+              height: 24.0,
+              width: 1.0,
+              color: Colors.white24,
+            ),
+            const SizedBox(width: 6.0),
+            // Biểu tượng mặt bi / điểm chạm mũi cơ
+            Tooltip(
+              message: 'Thông số cách đánh & Mũi cơ (Tĩnh)',
+              child: InkWell(
+                key: const Key('cue_tip_icon_button'),
+                borderRadius: BorderRadius.circular(20.0),
+                onTap: _showCueTipInfoSheet,
+                child: Container(
+                  width: 36.0,
+                  height: 36.0,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.white10,
+                    border: Border.all(color: Colors.white30, width: 1.0),
+                  ),
+                  child: const Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Icon(Icons.trip_origin, size: 22.0, color: Colors.white70),
+                      Positioned(
+                        right: 5.0,
+                        bottom: 7.0,
+                        child: Icon(Icons.circle, size: 5.0, color: Colors.redAccent),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            if (selected != null) ...[
+              const SizedBox(width: 4.0),
+              IconButton(
+                key: const Key('bottom_lock_ball_button'),
+                tooltip: selected.locked ? 'Mở khóa vị trí' : 'Khóa vị trí',
+                constraints: const BoxConstraints(minWidth: 36.0, minHeight: 36.0),
+                padding: EdgeInsets.zero,
+                icon: Icon(
+                  selected.locked ? Icons.lock : Icons.lock_open,
+                  color: selected.locked ? Colors.amberAccent : Colors.white70,
+                  size: 18.0,
+                ),
+                onPressed: locked ? null : () => _controller.toggleBallLock(selected.id),
+              ),
+              IconButton(
+                key: const Key('bottom_open_xy_button'),
+                tooltip: 'Tọa độ X/Y (${_formatCoord(selected.center.x)}, ${_formatCoord(selected.center.y)})',
+                constraints: const BoxConstraints(minWidth: 36.0, minHeight: 36.0),
+                padding: EdgeInsets.zero,
+                icon: const Icon(Icons.my_location, color: Colors.white70, size: 18.0),
+                onPressed: locked ? null : _openCoordinateEditorSheet,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+  Widget _buildFloatingMainToolbar(
+    BuildContext context,
+    Size areaSize,
+    Offset currentOffset,
+  ) {
+    // Giữ tay nắm kéo và nút tương thích test cũ
+    return Material(
+      key: _toolbarKey,
+      color: Colors.transparent,
+      child: GestureDetector(
+        key: const Key('floating_toolbar_drag_handle'),
+        behavior: HitTestBehavior.translucent,
+        onPanStart: (_) {
+          if (_controller.isDraggingAny || _controller.isLoading) return;
+          setState(() {
+            _isDraggingToolbar = true;
+            _toolbarOffset ??= currentOffset;
+          });
+        },
+        onPanUpdate: (details) {
+          if (!_isDraggingToolbar) return;
+          setState(() {
+            final next = (_toolbarOffset ?? currentOffset) + details.delta;
+            _toolbarOffset = _clampToolbarOffset(next, areaSize);
+          });
+        },
+        onPanEnd: (_) {
+          if (_isDraggingToolbar) {
+            setState(() => _isDraggingToolbar = false);
+          }
+        },
+        onPanCancel: () {
+          if (_isDraggingToolbar) {
+            setState(() => _isDraggingToolbar = false);
+          }
+        },
+        child: IconButton(
+          key: const Key('floating_toolbar_collapse_button'),
+          tooltip: _toolbarCollapsed ? 'Mở rộng công cụ' : 'Thu gọn công cụ',
+          icon: Icon(
+            _toolbarCollapsed ? Icons.unfold_more : Icons.unfold_less,
+            color: Colors.white70,
+            size: 20.0,
+          ),
+          onPressed: () {
+            setState(() {
+              _toolbarCollapsed = !_toolbarCollapsed;
+              _leftToolbarCollapsed = _toolbarCollapsed;
+              _rightToolbarCollapsed = _toolbarCollapsed;
+            });
+          },
         ),
       ),
     );

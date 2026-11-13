@@ -548,7 +548,7 @@ class _BilliardTablePainter extends CustomPainter {
       return Rect.fromLTRB(p1.dx, p1.dy, p2.dx, p2.dy);
     }
 
-    // 1. Khung ngoài xám bo góc: (-20, -20) -> (208, 396)
+    // 1. Khung ngoài xám sáng bo góc theo mẫu: (-20, -20) -> (208, 396)
     final frameRect = rectFromDiagram(
       TableConstants.frameMinX,
       TableConstants.frameMinY,
@@ -567,12 +567,12 @@ class _BilliardTablePainter extends CustomPainter {
     );
     canvas.drawRRect(
       frameRRect,
-      Paint()..color = const Color(0xFF757A82),
+      Paint()..color = const Color(0xFFD5D9DC),
     );
     canvas.drawRRect(
       frameRRect,
       Paint()
-        ..color = const Color(0xFF4D5259)
+        ..color = const Color(0xFF8F969E)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.2,
     );
@@ -586,10 +586,10 @@ class _BilliardTablePainter extends CustomPainter {
     );
     canvas.drawRect(
       railRect,
-      Paint()..color = const Color(0xFF1565C0),
+      Paint()..color = const Color(0xFF1358A8),
     );
 
-    // 3. Lòng bàn xanh (blue!80): (0, 0) -> (188, 376)
+    // 3. Lòng bàn xanh sáng theo mẫu: (0, 0) -> (188, 376)
     final playfieldRect = rectFromDiagram(
       0.0,
       0.0,
@@ -598,12 +598,12 @@ class _BilliardTablePainter extends CustomPainter {
     );
     canvas.drawRect(
       playfieldRect,
-      Paint()..color = const Color(0xFF2B7FD9),
+      Paint()..color = const Color(0xFF1C75CD),
     );
     canvas.drawRect(
       playfieldRect,
       Paint()
-        ..color = const Color(0xFF0D47A1)
+        ..color = const Color(0xFF0C407A)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.0,
     );
