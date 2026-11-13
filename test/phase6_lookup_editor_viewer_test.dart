@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,6 +17,7 @@ import 'package:libre_billiard_notebook/ui/screens/article_editor_screen.dart';
 import 'package:libre_billiard_notebook/ui/screens/notebook_home_screen.dart';
 import 'package:libre_billiard_notebook/ui/screens/table_stage_screen.dart';
 import 'package:libre_billiard_notebook/ui/widgets/article_detail_body.dart';
+import 'package:libre_billiard_notebook/ui/widgets/stroke_parameter_widgets.dart';
 
 DiagramScene _buildRichScene(
   String id, {
@@ -992,8 +994,8 @@ void main() {
       await tester.ensureVisible(find.byKey(const Key('hit_thickness_cancel_button')));
       await tester.tap(find.byKey(const Key('hit_thickness_cancel_button')));
       await tester.pumpAndSettle();
-      expect(controller.scene.strokeParameters.twelfthCount, 6);
-      expect(controller.scene.strokeParameters.hitSide, HitSide.center);
+      expect(controller.scene.effectiveStrokeParameters.twelfthCount, 6);
+      expect(controller.scene.effectiveStrokeParameters.hitSide, HitSide.center);
 
       // Mở lại, chỉnh sang 9/12 và Má trái -> Áp dụng
       await tester.tap(find.byKey(const Key('bottom_hit_thickness_button')));
@@ -1007,7 +1009,7 @@ void main() {
       await tester.tap(find.byKey(const Key('hit_thickness_apply_button')));
       await tester.pumpAndSettle();
 
-      expect(controller.scene.strokeParameters.hitSide, HitSide.left);
+      expect(controller.scene.effectiveStrokeParameters.hitSide, HitSide.left);
       expect(controller.hasUnsavedChanges, isTrue);
       expect(controller.canUndo, isTrue);
 
@@ -1025,8 +1027,8 @@ void main() {
       // Bấm Hủy -> Giữ nguyên tọa độ cũ
       await tester.tap(find.byKey(const Key('cue_tip_cancel_button')));
       await tester.pumpAndSettle();
-      expect(controller.scene.strokeParameters.tipXMm, 0.0);
-      expect(controller.scene.strokeParameters.tipZMm, 0.0);
+      expect(controller.scene.effectiveStrokeParameters.tipXMm, 0.0);
+      expect(controller.scene.effectiveStrokeParameters.tipZMm, 0.0);
 
       // Mở lại, chọn điểm lệch tâm và bấm Áp dụng
       await tester.tap(find.byKey(const Key('bottom_cue_tip_button')));
@@ -1038,42 +1040,42 @@ void main() {
       await tester.pumpAndSettle();
 
       // Ép phê được cập nhật, tỷ lệ chạm trái và má chạm KHÔNG bị thay đổi
-      expect(controller.scene.strokeParameters.tipXMm, isNot(0.0));
-      expect(controller.scene.strokeParameters.hitSide, HitSide.left);
+      expect(controller.scene.effectiveStrokeParameters.tipXMm, isNot(0.0));
+      expect(controller.scene.effectiveStrokeParameters.hitSide, HitSide.left);
 
       // 4. PHẦN LỰC ĐÁNH: 0..100%, chặn ngoài miền, cập nhật số
       await tester.tap(find.byKey(const Key('bottom_force_button')));
       await tester.pumpAndSettle();
       expect(find.text('Lực đánh'), findsOneWidget);
       expect(find.byKey(const Key('force_slider')), findsOneWidget);
-      expect(find.byKey(const Key('force_number_input')), findsOneWidget);
+      expect(find.byKey(const Key('force_input_field')), findsOneWidget);
 
       // Thử nhập số ngoài miền (> 100) -> báo lỗi và vô hiệu hóa nút Áp dụng
-      await tester.enterText(find.byKey(const Key('force_number_input')), '150');
+      await tester.enterText(find.byKey(const Key('force_input_field')), '150');
       await tester.pumpAndSettle();
       expect(find.text('Lực phải nằm trong khoảng từ 0% đến 100%.'), findsOneWidget);
 
       // Nhập số hợp lệ 75%
-      await tester.enterText(find.byKey(const Key('force_number_input')), '75');
+      await tester.enterText(find.byKey(const Key('force_input_field')), '75');
       await tester.pumpAndSettle();
       expect(find.text('Lực phải nằm trong khoảng từ 0% đến 100%.'), findsNothing);
 
       await tester.tap(find.byKey(const Key('force_apply_button')));
       await tester.pumpAndSettle();
 
-      expect(controller.scene.strokeParameters.forcePercent, 75);
-      expect(controller.scene.strokeParameters.forceDisplay, '75%');
+      expect(controller.scene.effectiveStrokeParameters.forcePercent, 75);
+      expect(controller.scene.effectiveStrokeParameters.forceDisplay, '75%');
 
       // 5. Kiểm tra tính năng Undo / Redo cho thông số cách đánh
       expect(controller.canUndo, isTrue);
       controller.undo();
       await tester.pumpAndSettle();
       // Quay lại lực trước đó
-      expect(controller.scene.strokeParameters.forcePercent, isNot(75));
+      expect(controller.scene.effectiveStrokeParameters.forcePercent, isNot(75));
 
       controller.redo();
       await tester.pumpAndSettle();
-      expect(controller.scene.strokeParameters.forcePercent, 75);
+      expect(controller.scene.effectiveStrokeParameters.forcePercent, 75);
 
       // 6. Kiểm tra bảo toàn dữ liệu cũ (8 phần) không bị âm thầm làm tròn
       final legacyJson = {
@@ -1094,6 +1096,206 @@ void main() {
       final exportedJson = loadedParams.toJson();
       expect(exportedJson['thicknessMode'], 'eighths');
       expect(exportedJson['eighthCount'], 3);
+    });
+
+    testWidgets('8. Nghiệm thu hoàn thiện Phase 6A: Bảo toàn độ dày cũ (3/8, exact), đồng bộ scene/article, bounds hình vẽ & hình học ép phê', (tester) async {
+      Future<void> showTestDialog(WidgetBuilder dialogBuilder) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Builder(
+              builder: (ctx) => Scaffold(
+                body: Center(
+                  child: ElevatedButton(
+                    key: const Key('open_dialog_btn'),
+                    onPressed: () => showDialog(context: ctx, builder: dialogBuilder),
+                    child: const Text('Open'),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.byKey(const Key('open_dialog_btn')));
+        await tester.pumpAndSettle();
+      }
+
+      // A. Legacy 3/8 -> mở dialog -> Áp dụng không sửa: vẫn 3/8
+      StrokeParameters? appliedLegacy;
+      const initialLegacy = StrokeParameters(
+        thicknessMode: HitThicknessMode.eighths,
+        eighthCount: 3,
+        hitSide: HitSide.left,
+        tipXMm: 4.0,
+      );
+
+      await showTestDialog((_) => HitThicknessDialog(
+        initialStroke: initialLegacy,
+        onApply: (updated) => appliedLegacy = updated,
+      ));
+
+      expect(find.textContaining('3/8 bi'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('hit_thickness_apply_button')));
+      await tester.pumpAndSettle();
+
+      expect(appliedLegacy, isNotNull);
+      expect(appliedLegacy!.thicknessMode, HitThicknessMode.eighths);
+      expect(appliedLegacy!.eighthCount, 3);
+      expect(appliedLegacy!.effectiveThicknessFraction, closeTo(3.0 / 8.0, 1e-4));
+      expect(appliedLegacy!.hitSide, HitSide.left);
+
+      // B. Exact 0.45 tương tự: mở dialog -> Áp dụng không sửa: vẫn exact 0.45
+      StrokeParameters? appliedExact;
+      const initialExact = StrokeParameters(
+        thicknessMode: HitThicknessMode.exact,
+        exactThicknessValue: 0.45,
+        hitSide: HitSide.right,
+      );
+
+      await showTestDialog((_) => HitThicknessDialog(
+        initialStroke: initialExact,
+        onApply: (updated) => appliedExact = updated,
+      ));
+
+      expect(find.text('Đang giữ giá trị chính xác: 0.45'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('hit_thickness_apply_button')));
+      await tester.pumpAndSettle();
+
+      expect(appliedExact, isNotNull);
+      expect(appliedExact!.thicknessMode, HitThicknessMode.exact);
+      expect(appliedExact!.exactThicknessValue, 0.45);
+      expect(appliedExact!.effectiveThicknessFraction, 0.45);
+      expect(appliedExact!.hitSide, HitSide.right);
+
+      // C. Hai scene có thông số khác nhau, một scene đúng defaults: sửa/lưu/mở lại không ghi đè lẫn nhau
+      final scene1 = DiagramScene.defaultInitial(id: 'scene_custom').copyWith(
+        strokeParameters: const StrokeParameters(
+          twelfthCount: 9,
+          hitSide: HitSide.left,
+          tipXMm: 10.0,
+          forcePercent: 80,
+        ),
+      );
+      final scene2 = DiagramScene.defaultInitial(id: 'scene_defaults').copyWith(
+        strokeParameters: const StrokeParameters.defaults(),
+      );
+
+      expect(scene1.hasExplicitStrokeParameters, isTrue);
+      expect(scene2.hasExplicitStrokeParameters, isTrue);
+      expect(scene1.effectiveStrokeParameters.twelfthCount, 9);
+      expect(scene2.effectiveStrokeParameters.twelfthCount, 6); // defaults
+
+      // Serialize và deserialize cả 2 scene
+      final json1 = scene1.toJson();
+      final json2 = scene2.toJson();
+      final roundTrip1 = DiagramScene.fromJson(json1);
+      final roundTrip2 = DiagramScene.fromJson(json2);
+
+      expect(roundTrip1.hasExplicitStrokeParameters, isTrue);
+      expect(roundTrip2.hasExplicitStrokeParameters, isTrue);
+      expect(roundTrip1.effectiveStrokeParameters.twelfthCount, 9);
+      expect(roundTrip1.effectiveStrokeParameters.forcePercent, 80);
+      expect(roundTrip2.effectiveStrokeParameters.twelfthCount, 6);
+      expect(roundTrip2.effectiveStrokeParameters.forcePercent, 50);
+
+      // D. Kiểm tra vị trí hình vẽ HitThicknessPainter không vượt bounds
+      for (final side in [HitSide.left, HitSide.right, HitSide.center]) {
+        for (final k in [1, 6, 12]) {
+          final testStroke = StrokeParameters(
+            thicknessMode: HitThicknessMode.twelfths,
+            twelfthCount: k,
+            hitSide: side,
+            tipXMm: 12.0,
+            tipZMm: -8.0,
+          );
+
+          // Thử trên cả kích thước preview (66x34) và dialog lớn (180x72)
+          for (final size in [const Size(66.0, 34.0), const Size(180.0, 72.0)]) {
+            final thickness = testStroke.effectiveThicknessFraction;
+            final sepFactor = (testStroke.isFullFace || testStroke.hitSide == HitSide.center)
+                ? 0.0
+                : (testStroke.hitSide == HitSide.right ? 2.0 * (1.0 - thickness) : -2.0 * (1.0 - thickness));
+            const padding = 3.0;
+            final maxSpan = 2.0 * (2.0 - 1.0 / 12.0);
+            final radius = min((size.width - padding * 2) / maxSpan, (size.height - padding * 2) / 2.0);
+
+            final dPx = sepFactor * radius;
+            final yellowX = size.width / 2.0 - dPx / 2.0;
+            final whiteX = size.width / 2.0 + dPx / 2.0;
+            final centerY = size.height / 2.0;
+
+            // Kiểm tra mép ngoài bi vàng không vượt bounds
+            expect(yellowX - radius, greaterThanOrEqualTo(0.0), reason: 'Bi vàng mép trái vượt bounds tại k=$k, side=$side, size=$size');
+            expect(yellowX + radius, lessThanOrEqualTo(size.width), reason: 'Bi vàng mép phải vượt bounds tại k=$k, side=$side, size=$size');
+            expect(centerY - radius, greaterThanOrEqualTo(0.0));
+            expect(centerY + radius, lessThanOrEqualTo(size.height));
+
+            // Kiểm tra mép ngoài bi trắng không vượt bounds
+            expect(whiteX - radius, greaterThanOrEqualTo(0.0), reason: 'Bi trắng mép trái vượt bounds tại k=$k, side=$side, size=$size');
+            expect(whiteX + radius, lessThanOrEqualTo(size.width), reason: 'Bi trắng mép phải vượt bounds tại k=$k, side=$side, size=$size');
+
+            // Kiểm tra chấm mũi cơ không vượt bounds
+            final dot = CueTipGeometry.tipDotCenter(
+              ballCenter: Offset(whiteX, centerY),
+              ballRadiusPx: radius,
+              tipXMm: testStroke.tipXMm,
+              tipZMm: testStroke.tipZMm,
+              dotRadiusPx: 2.5,
+            );
+            expect(dot.dx, greaterThanOrEqualTo(0.0));
+            expect(dot.dx, lessThanOrEqualTo(size.width));
+            expect(dot.dy, greaterThanOrEqualTo(0.0));
+            expect(dot.dy, lessThanOrEqualTo(size.height));
+          }
+        }
+      }
+
+      // E. Kiểm tra vòng mức và tọa độ chấm ép phê bằng giá trị cụ thể
+      const ballR = 60.0;
+      // 4 mức quy ước: 1 mức = 3.84375 mm, mức 4 = 15.375 mm
+      expect(CueTipGeometry.levelRadiusPx(1, ballR), closeTo(7.5, 1e-6));
+      expect(CueTipGeometry.levelRadiusPx(2, ballR), closeTo(15.0, 1e-6));
+      expect(CueTipGeometry.levelRadiusPx(3, ballR), closeTo(22.5, 1e-6));
+      expect(CueTipGeometry.levelRadiusPx(4, ballR), closeTo(30.0, 1e-6));
+
+      // Kiểm tra chuyển đổi ngược mm ↔ px
+      expect(CueTipGeometry.mmToPx(15.375, ballR), closeTo(30.0, 1e-6));
+      expect(CueTipGeometry.pxToMm(30.0, ballR), closeTo(15.375, 1e-6));
+      expect(CueTipGeometry.pxToMm(-30.0, ballR), closeTo(-15.375, 1e-6));
+
+      // F. Nhập lực 0%, 50%, 100%, bảo toàn ghi chú lực văn bản cũ
+      StrokeParameters? appliedForce;
+      const initialForce = StrokeParameters(
+        forceText: 'Trô vừa tay',
+        forcePercent: 40,
+      );
+
+      // Thử nhập 0%
+      await showTestDialog((_) => ForceDialog(
+        initialStroke: initialForce,
+        onApply: (updated) => appliedForce = updated,
+      ));
+      await tester.enterText(find.byKey(const Key('force_input_field')), '0');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('force_apply_button')));
+      await tester.pumpAndSettle();
+
+      expect(appliedForce!.forcePercent, 0);
+      expect(appliedForce!.forceText, 'Trô vừa tay'); // Bảo toàn nguyên vẹn ghi chú cũ!
+      expect(appliedForce!.forceDisplay, '0% (Trô vừa tay)');
+
+      // Thử nhập 100%
+      await showTestDialog((_) => ForceDialog(
+        initialStroke: appliedForce!,
+        onApply: (updated) => appliedForce = updated,
+      ));
+      await tester.enterText(find.byKey(const Key('force_input_field')), '100');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('force_apply_button')));
+      await tester.pumpAndSettle();
+
+      expect(appliedForce!.forcePercent, 100);
+      expect(appliedForce!.forceText, 'Trô vừa tay');
+      expect(appliedForce!.forceDisplay, '100% (Trô vừa tay)');
     });
   });
 }

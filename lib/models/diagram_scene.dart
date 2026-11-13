@@ -891,8 +891,15 @@ class DiagramScene {
   final List<GuidePath> paths;
   final List<DiagramAnnotation> annotations;
   final SceneViewSettings viewSettings;
-  final StrokeParameters strokeParameters;
+  final StrokeParameters? strokeParameters;
   final Map<String, dynamic> extraFields;
+
+  /// Cho biết sơ đồ này đã có bộ thông số cú đánh được người dùng thiết lập riêng hay chưa.
+  bool get hasExplicitStrokeParameters => strokeParameters != null;
+
+  /// Bộ thông số cú đánh hữu hiệu (trả về giá trị riêng nếu đã thiết lập, hoặc defaults()).
+  StrokeParameters get effectiveStrokeParameters =>
+      strokeParameters ?? const StrokeParameters.defaults();
 
   DiagramScene({
     required this.id,
@@ -903,7 +910,7 @@ class DiagramScene {
     List<GuidePath> paths = const [],
     List<DiagramAnnotation> annotations = const [],
     this.viewSettings = const SceneViewSettings.defaults(),
-    this.strokeParameters = const StrokeParameters.defaults(),
+    this.strokeParameters,
     Map<String, dynamic> extraFields = const {},
   })  : balls = List<Ball>.unmodifiable(balls),
         paths = List<GuidePath>.unmodifiable(paths),
@@ -922,6 +929,7 @@ class DiagramScene {
     List<DiagramAnnotation>? annotations,
     SceneViewSettings? viewSettings,
     StrokeParameters? strokeParameters,
+    bool clearStrokeParameters = false,
     Map<String, dynamic>? extraFields,
   }) {
     return DiagramScene(
@@ -933,7 +941,9 @@ class DiagramScene {
       paths: paths ?? this.paths,
       annotations: annotations ?? this.annotations,
       viewSettings: viewSettings ?? this.viewSettings,
-      strokeParameters: strokeParameters ?? this.strokeParameters,
+      strokeParameters: clearStrokeParameters
+          ? null
+          : (strokeParameters ?? this.strokeParameters),
       extraFields: extraFields ?? this.extraFields,
     );
   }
@@ -1125,7 +1135,8 @@ class DiagramScene {
         'paths': paths.map((p) => p.toJson()).toList(),
         'annotations': annotations.map((a) => a.toJson()).toList(),
         'viewSettings': viewSettings.toJson(),
-        'strokeParameters': strokeParameters.toJson(),
+        if (strokeParameters != null)
+          'strokeParameters': strokeParameters!.toJson(),
       };
 
   factory DiagramScene.fromJson(Map<String, dynamic> json) {
@@ -1189,7 +1200,7 @@ class DiagramScene {
           ? StrokeParameters.fromJson(
               json['strokeParameters'] as Map<String, dynamic>,
             )
-          : const StrokeParameters.defaults(),
+          : null,
       extraFields: _extractExtraFields(
         json,
         const {

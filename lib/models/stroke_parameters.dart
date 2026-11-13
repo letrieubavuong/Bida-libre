@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 /// Kiểu độ dày chạm bi mục tiêu (tĩnh, hoàn toàn không giải cơ học).
 enum HitThicknessMode {
   twelfths('twelfths', 'Phần mười hai (k/12)'),
@@ -65,6 +67,53 @@ class CueTipConvention {
     }
     final nearestLevel = level.clamp(0.0, 4.0);
     return '$dir mức ${nearestLevel.toStringAsFixed(1)} (${absMm.toStringAsFixed(2)} mm)';
+  }
+}
+
+/// Hình học và quy đổi thống nhất mm ↔ pixel cho vị trí mũi cơ trên mặt bi.
+class CueTipGeometry {
+  const CueTipGeometry._();
+
+  static const double refRadiusMm = CueTipConvention.referenceBallRadiusMm; // 30.75 mm
+
+  /// Đổi khoảng cách lệch mm sang pixel dựa trên bán kính bi pixel.
+  static double mmToPx(double offsetMm, double ballRadiusPx) {
+    if (refRadiusMm <= 0) return 0.0;
+    return (offsetMm / refRadiusMm) * ballRadiusPx;
+  }
+
+  /// Đổi khoảng cách pixel sang mm dựa trên bán kính bi pixel.
+  static double pxToMm(double offsetPx, double ballRadiusPx) {
+    if (ballRadiusPx <= 0) return 0.0;
+    return (offsetPx / ballRadiusPx) * refRadiusMm;
+  }
+
+  /// Bán kính pixel chính xác của vòng mức level (level 1..4).
+  /// Mức 1: 3.84375 mm, Mức 2: 7.6875 mm, Mức 3: 11.53125 mm, Mức 4: 15.375 mm.
+  static double levelRadiusPx(int level, double ballRadiusPx) {
+    final mm = level * CueTipConvention.fourLevelStepMm;
+    return mmToPx(mm, ballRadiusPx);
+  }
+
+  /// Tọa độ tâm pixel của chấm mũi cơ, đảm bảo kẹp an toàn không vượt quá biên bi.
+  static Offset tipDotCenter({
+    required Offset ballCenter,
+    required double ballRadiusPx,
+    required double tipXMm,
+    required double tipZMm,
+    required double dotRadiusPx,
+  }) {
+    final dx = mmToPx(tipXMm, ballRadiusPx);
+    final dy = -mmToPx(tipZMm, ballRadiusPx);
+    var dot = Offset(ballCenter.dx + dx, ballCenter.dy + dy);
+
+    // Kẹp trong mặt bi để chấm tròn không bị tràn ra ngoài viền bi
+    final maxDist = (ballRadiusPx - dotRadiusPx).clamp(0.0, ballRadiusPx);
+    final dist = (dot - ballCenter).distance;
+    if (dist > maxDist && dist > 1e-6) {
+      dot = ballCenter + (dot - ballCenter) * (maxDist / dist);
+    }
+    return dot;
   }
 }
 
@@ -148,6 +197,10 @@ class StrokeParameters {
   /// Hiển thị giá trị lực (ưu tiên forcePercent 0-100%, bảo toàn forceText cũ).
   String get forceDisplay {
     if (forcePercent != null) {
+      final txt = forceText.trim();
+      if (txt.isNotEmpty && !txt.endsWith('%') && int.tryParse(txt) == null) {
+        return '$forcePercent% ($txt)';
+      }
       return '$forcePercent%';
     }
     if (forceText.trim().isNotEmpty) {

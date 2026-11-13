@@ -815,7 +815,9 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
 
   Future<void> _addDiagram() async {
     final newId = _freshUuid();
-    final initial = DiagramScene.defaultInitial(id: newId).copyWith(strokeParameters: _stroke);
+    final initial = DiagramScene.defaultInitial(id: newId).copyWith(
+      strokeParameters: _stroke,
+    );
     final result = await Navigator.of(context).push<DiagramScene>(
       MaterialPageRoute(
         builder: (_) => TableStageScreen(
@@ -828,10 +830,6 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
     if (result == null || !mounted) return;
 
     setState(() {
-      _stroke = result.strokeParameters;
-      _tipXCtrl.text = _stroke.tipXMm.toString();
-      _tipZCtrl.text = _stroke.tipZMm.toString();
-      _forceCtrl.text = _stroke.forceDisplay;
       _diagrams.add(
         ArticleDiagram(
           id: newId,
@@ -848,14 +846,19 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
 
   Future<void> _editDiagram(int index) async {
     final existing = _diagrams[index];
-    final effectiveScene = existing.scene.strokeParameters == const StrokeParameters.defaults()
-        ? existing.scene.copyWith(strokeParameters: _stroke)
-        : existing.scene;
+    // Không dùng so sánh với defaults()!
+    // Phân biệt rõ dữ liệu đã thiết lập riêng (hasExplicitStrokeParameters)
+    // với sơ đồ kế thừa thông số ban đầu của bài viết.
+    final effectiveStroke = existing.scene.hasExplicitStrokeParameters
+        ? existing.scene.strokeParameters!
+        : _stroke;
+    final sceneToEdit = existing.scene.copyWith(strokeParameters: effectiveStroke);
+
     final result = await Navigator.of(context).push<DiagramScene>(
       MaterialPageRoute(
         builder: (_) => TableStageScreen(
-          initialScene: effectiveScene,
-          initialStroke: effectiveScene.strokeParameters,
+          initialScene: sceneToEdit,
+          initialStroke: effectiveStroke,
           returnSceneOnSave: true,
         ),
       ),
@@ -863,10 +866,8 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
     if (result == null || !mounted) return;
 
     setState(() {
-      _stroke = result.strokeParameters;
-      _tipXCtrl.text = _stroke.tipXMm.toString();
-      _tipZCtrl.text = _stroke.tipZMm.toString();
-      _forceCtrl.text = _stroke.forceDisplay;
+      // Mỗi sơ đồ giữ bộ thông số riêng, không ghi đè _stroke chung của bài
+      // và không âm thầm làm đổi sơ đồ khác trong cùng bài.
       _diagrams[index] = existing.copyWith(
         scene: result.copyWith(id: existing.id),
       );

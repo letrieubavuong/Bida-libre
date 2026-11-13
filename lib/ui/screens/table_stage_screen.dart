@@ -68,18 +68,22 @@ class _TableStageScreenState extends State<TableStageScreen> {
     super.initState();
     _ownsController = widget.controller == null;
 
-    final baseScene = widget.initialScene != null && widget.initialStroke != null
-        ? widget.initialScene!.copyWith(strokeParameters: widget.initialStroke)
-        : (widget.initialScene != null
-            ? widget.initialScene!
-            : (widget.initialStroke != null
-                ? DiagramScene.defaultInitial(id: 'scene_main')
-                    .copyWith(strokeParameters: widget.initialStroke)
-                : null));
+    final initialScene = widget.initialScene;
+    DiagramScene? baseScene;
+    if (initialScene != null) {
+      final strokeToUse = initialScene.hasExplicitStrokeParameters
+          ? initialScene.strokeParameters!
+          : (widget.initialStroke ?? const StrokeParameters.defaults());
+      baseScene = initialScene.copyWith(strokeParameters: strokeToUse);
+    } else if (widget.returnSceneOnSave || widget.initialStroke != null) {
+      final strokeToUse = widget.initialStroke ?? const StrokeParameters.defaults();
+      baseScene = DiagramScene.defaultInitial(id: 'scene_main')
+          .copyWith(strokeParameters: strokeToUse);
+    }
 
     if (widget.controller != null) {
       _controller = widget.controller!;
-      if (widget.initialStroke != null) {
+      if (!_controller.scene.hasExplicitStrokeParameters && widget.initialStroke != null) {
         _controller.updateStrokeParameters(widget.initialStroke!);
       }
     } else if (widget.returnSceneOnSave || baseScene != null) {
@@ -1587,7 +1591,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
     showDialog<void>(
       context: context,
       builder: (ctx) => HitThicknessDialog(
-        initialStroke: _controller.scene.strokeParameters,
+        initialStroke: _controller.scene.effectiveStrokeParameters,
         onApply: (updated) {
           _controller.updateStrokeParameters(updated);
         },
@@ -1600,7 +1604,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
     showDialog<void>(
       context: context,
       builder: (ctx) => CueTipDialog(
-        initialStroke: _controller.scene.strokeParameters,
+        initialStroke: _controller.scene.effectiveStrokeParameters,
         onApply: (updated) {
           _controller.updateStrokeParameters(updated);
         },
@@ -1613,7 +1617,7 @@ class _TableStageScreenState extends State<TableStageScreen> {
     showDialog<void>(
       context: context,
       builder: (ctx) => ForceDialog(
-        initialStroke: _controller.scene.strokeParameters,
+        initialStroke: _controller.scene.effectiveStrokeParameters,
         onApply: (updated) {
           _controller.updateStrokeParameters(updated);
         },
@@ -1622,124 +1626,67 @@ class _TableStageScreenState extends State<TableStageScreen> {
   }
 
   Widget _buildBottomStrokeBar(BuildContext context) {
-    final stroke = _controller.scene.strokeParameters;
-    final selected = _controller.selectedBall;
+    final stroke = _controller.scene.effectiveStrokeParameters;
 
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        // Hỗ trợ accessibility / test runner chọn bi, khóa bi & mở tọa độ khi bi được chọn
-        Positioned(
-          left: 0,
-          top: 0,
-          width: 10.0,
-          height: 1.0,
-          child: Opacity(
-            opacity: 0.01,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final ball in _controller.balls)
-                  SizedBox(
-                    width: 1.0,
-                    height: 1.0,
-                    child: GestureDetector(
-                      key: Key('select_${ball.id}'),
-                      onTap: _controller.isEditingLocked
-                          ? null
-                          : () => _controller.selectBall(ball.id),
-                    ),
-                  ),
-                if (selected != null) ...[
-                  SizedBox(
-                    width: 1.0,
-                    height: 1.0,
-                    child: IconButton(
-                      key: const Key('lock_ball_button'),
-                      onPressed: _controller.isEditingLocked
-                          ? null
-                          : () => _controller.toggleBallLock(selected.id),
-                      icon: const Icon(Icons.lock),
-                    ),
-                  ),
-                  SizedBox(
-                    width: 1.0,
-                    height: 1.0,
-                    child: IconButton(
-                      key: const Key('open_xy_button'),
-                      onPressed: _controller.isEditingLocked
-                          ? null
-                          : _openCoordinateEditorSheet,
-                      icon: const Icon(Icons.my_location),
-                    ),
-                  ),
-                ],
-              ],
+    // Thanh đúng 3 phần: Chạm trái / Ép phê / Lực đánh theo ảnh tham chiếu
+    return Container(
+      key: const Key('bottom_stroke_bar'),
+      margin: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
+      padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 3.0),
+      decoration: BoxDecoration(
+        color: const Color(0xEE121417),
+        borderRadius: BorderRadius.circular(32.0),
+        border: Border.all(color: Colors.white12, width: 1.0),
+        boxShadow: const [
+          BoxShadow(
+            color: Colors.black54,
+            blurRadius: 10.0,
+            offset: Offset(0, 3),
+          ),
+        ],
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // 1. PHẦN CHẠM TRÁI: Bi vàng chia 12 phần sọc đứng + bi trắng chồng + chấm ép phê
+            HitThicknessPreviewWidget(
+              stroke: stroke,
+              onTap: _openHitThicknessDialog,
             ),
-          ),
-        ),
 
-        // Thanh đúng 3 phần: Chạm trái / Ép phê / Lực đánh theo ảnh tham chiếu
-        Container(
-          key: const Key('bottom_stroke_bar'),
-          margin: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
-          padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 3.0),
-          decoration: BoxDecoration(
-            color: const Color(0xEE121417),
-            borderRadius: BorderRadius.circular(32.0),
-            border: Border.all(color: Colors.white12, width: 1.0),
-            boxShadow: const [
-              BoxShadow(
-                color: Colors.black54,
-                blurRadius: 10.0,
-                offset: Offset(0, 3),
-              ),
-            ],
-          ),
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                // 1. PHẦN CHẠM TRÁI: Bi vàng chia 12 phần sọc đứng + bi trắng chồng + chấm ép phê
-                HitThicknessPreviewWidget(
-                  stroke: stroke,
-                  onTap: _openHitThicknessDialog,
-                ),
-
-                const SizedBox(width: 8.0),
-                Container(
-                  height: 28.0,
-                  width: 1.0,
-                  color: Colors.white12,
-                ),
-                const SizedBox(width: 8.0),
-
-                // 2. PHẦN ÉP PHÊ: Mặt bi trắng + hai trục chữ thập + chấm đỏ mũi cơ
-                CueTipPreviewWidget(
-                  stroke: stroke,
-                  onTap: _openCueTipDialog,
-                ),
-
-                const SizedBox(width: 8.0),
-                Container(
-                  height: 28.0,
-                  width: 1.0,
-                  color: Colors.white12,
-                ),
-                const SizedBox(width: 8.0),
-
-                // 3. PHẦN LỰC ĐÁNH: Biểu tượng tia sét + phần trăm 0-100%
-                ForcePreviewWidget(
-                  stroke: stroke,
-                  onTap: _openForceDialog,
-                ),
-              ],
+            const SizedBox(width: 8.0),
+            Container(
+              height: 28.0,
+              width: 1.0,
+              color: Colors.white12,
             ),
-          ),
+            const SizedBox(width: 8.0),
+
+            // 2. PHẦN ÉP PHÊ: Mặt bi trắng + hai trục chữ thập + chấm đỏ mũi cơ
+            CueTipPreviewWidget(
+              stroke: stroke,
+              onTap: _openCueTipDialog,
+            ),
+
+            const SizedBox(width: 8.0),
+            Container(
+              height: 28.0,
+              width: 1.0,
+              color: Colors.white12,
+            ),
+            const SizedBox(width: 8.0),
+
+            // 3. PHẦN LỰC ĐÁNH: Biểu tượng tia sét + phần trăm 0-100%
+            ForcePreviewWidget(
+              stroke: stroke,
+              onTap: _openForceDialog,
+            ),
+          ],
         ),
-      ],
+      ),
     );
   }
 

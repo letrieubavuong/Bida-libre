@@ -823,6 +823,11 @@ void main() {
       );
 
       // Mở bảng nhập tọa độ X/Y và bật bàn phím ảo -> canvas vẫn giữ nguyên Size và tọa độ
+      final expandBtn = find.byKey(const Key('floating_panel_expand_button'));
+      if (expandBtn.evaluate().isNotEmpty) {
+        await tester.tap(expandBtn);
+        await tester.pumpAndSettle();
+      }
       await tester.tap(find.byKey(const Key('open_xy_button')));
       await tester.pumpAndSettle();
       tester.view.viewInsets = const FakeViewPadding(bottom: 300);

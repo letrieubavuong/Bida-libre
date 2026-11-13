@@ -4,6 +4,8 @@ import '../../models/stroke_parameters.dart';
 
 /// Painter vẽ bi vàng chia 12 vạch sọc đứng (cách đều ngang đường kính)
 /// và bi trắng chồng lên theo tỷ lệ độ dày chạm, má chạm, kèm chấm mũi cơ đỏ.
+/// Đảm bảo tính toán hoàn toàn theo bounds của widget (không dùng tọa độ cố định)
+/// và thể hiện nhất quán không làm che mất bi vàng ở mọi tỷ lệ chạm (kể cả 12/12 và chính tâm).
 class HitThicknessPainter extends CustomPainter {
   final StrokeParameters stroke;
   final bool isLarge;
@@ -12,12 +14,43 @@ class HitThicknessPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final double radius = isLarge ? 28.0 : 15.0;
-    final double yellowCenterX = isLarge ? 42.0 : 20.0;
-    final double centerY = size.height / 2;
-    final yellowCenter = Offset(yellowCenterX, centerY);
+    if (size.width <= 0 || size.height <= 0) return;
 
-    // 1. VẼ BI VÀNG VỚI 12 PHẦN BẰNG NHAU THEO CHIỀU NGANG ĐƯỜNG KÍNH
+    // 1. TÍNH TOÁN BÁN KÍNH VÀ TỌA ĐỘ THEO BOUNDS THỰC TẾ
+    final thickness = stroke.effectiveThicknessFraction;
+
+    // Khoảng cách giữa tâm 2 bi:
+    // Nếu tràn mặt (isFullFace) hoặc chính tâm (HitSide.center): 2 bi đồng tâm (d = 0).
+    // Nếu má phải: bi trắng lệch sang phải (d > 0).
+    // Nếu má trái: bi trắng lệch sang trái (d < 0).
+    final double separationFactor;
+    if (stroke.isFullFace || stroke.hitSide == HitSide.center) {
+      separationFactor = 0.0;
+    } else if (stroke.hitSide == HitSide.right) {
+      separationFactor = 2.0 * (1.0 - thickness);
+    } else {
+      separationFactor = -2.0 * (1.0 - thickness);
+    }
+
+    // Khoảng span ngang tối đa xảy ra tại độ dày mỏng nhất (1/12):
+    // spanFactor = |separationFactor| + 2.0 <= 2.0 * (11/12) + 2.0 = 23/6 ≈ 3.8333
+    const double padding = 3.0;
+    final maxSpanFactor = 2.0 * (2.0 - (1.0 / 12.0)); // 23/6 ≈ 3.8333
+    final maxRByWidth = (size.width - padding * 2) / maxSpanFactor;
+    final maxRByHeight = (size.height - padding * 2) / 2.0;
+    final double radius = min(maxRByWidth, maxRByHeight).clamp(4.0, 100.0);
+
+    final double centerY = size.height / 2.0;
+    final double dPx = separationFactor * radius;
+
+    // Căn giữa 2 bi cân đối hoàn hảo trong chiều rộng khả dụng:
+    final double yellowCenterX = (size.width / 2.0) - (dPx / 2.0);
+    final double whiteCenterX = (size.width / 2.0) + (dPx / 2.0);
+
+    final yellowCenter = Offset(yellowCenterX, centerY);
+    final whiteCenter = Offset(whiteCenterX, centerY);
+
+    // 2. VẼ BI VÀNG VỚI 11 VẠCH CHIA 12 PHẦN THẲNG ĐỨNG CÁCH ĐỀU THEO ĐƯỜNG KÍNH
     final double xLeft = yellowCenterX - radius;
     final double xRight = yellowCenterX + radius;
     final double stepX = (2 * radius) / 12.0;
@@ -29,15 +62,18 @@ class HitThicknessPainter extends CustomPainter {
     canvas.clipPath(yellowPath);
 
     // Nền bi vàng tươi
-    final yellowPaint = Paint()
-      ..color = const Color(0xFFFFD54F)
-      ..style = PaintingStyle.fill;
-    canvas.drawCircle(yellowCenter, radius, yellowPaint);
+    canvas.drawCircle(
+      yellowCenter,
+      radius,
+      Paint()
+        ..color = const Color(0xFFFFCA28)
+        ..style = PaintingStyle.fill,
+    );
 
-    // 11 vạch thẳng đứng, cách đều nhau theo đường kính
+    // 11 vạch thẳng đứng, cách đều nhau theo đường kính tạo 12 dải bằng nhau
     final linePaint = Paint()
       ..color = const Color(0xFFC49000)
-      ..strokeWidth = isLarge ? 1.5 : 0.8
+      ..strokeWidth = isLarge ? 1.5 : 0.9
       ..style = PaintingStyle.stroke;
 
     for (var i = 1; i <= 11; i++) {
@@ -50,14 +86,15 @@ class HitThicknessPainter extends CustomPainter {
     }
 
     // Vùng tô làm nổi bật phần tiếp xúc chạm đang chọn
-    final thickness = stroke.effectiveThicknessFraction;
     final hitWidth = 2 * radius * thickness;
-
-    if (stroke.isFullFace) {
-      final highlightPaint = Paint()
-        ..color = const Color(0x55FFA000)
-        ..style = PaintingStyle.fill;
-      canvas.drawCircle(yellowCenter, radius, highlightPaint);
+    if (stroke.isFullFace || stroke.hitSide == HitSide.center) {
+      canvas.drawCircle(
+        yellowCenter,
+        radius,
+        Paint()
+          ..color = const Color(0x44FFA000)
+          ..style = PaintingStyle.fill,
+      );
     } else if (stroke.hitSide == HitSide.right) {
       final highlightRect = Rect.fromLTRB(
         xRight - hitWidth,
@@ -88,22 +125,6 @@ class HitThicknessPainter extends CustomPainter {
           ..color = const Color(0x66FF8F00)
           ..style = PaintingStyle.fill,
       );
-    } else {
-      // Chính tâm
-      final highlightRect = Rect.fromLTRB(
-        yellowCenterX - hitWidth / 2,
-        centerY - radius,
-        yellowCenterX + hitWidth / 2,
-        centerY + radius,
-      );
-      canvas.clipRect(highlightRect);
-      canvas.drawCircle(
-        yellowCenter,
-        radius,
-        Paint()
-          ..color = const Color(0x66FF8F00)
-          ..style = PaintingStyle.fill,
-      );
     }
 
     canvas.restore();
@@ -111,55 +132,45 @@ class HitThicknessPainter extends CustomPainter {
     // Viền tròn bi vàng
     final yellowBorderPaint = Paint()
       ..color = const Color(0xFF8D6E63)
-      ..strokeWidth = isLarge ? 2.0 : 1.0
+      ..strokeWidth = isLarge ? 1.8 : 1.0
       ..style = PaintingStyle.stroke;
     canvas.drawCircle(yellowCenter, radius, yellowBorderPaint);
 
-    // 2. VẼ BI TRẮNG CHỒNG TƯƠNG ĐỐI
-    double whiteCenterX = yellowCenterX;
-    if (stroke.isFullFace) {
-      whiteCenterX = yellowCenterX;
-    } else if (stroke.hitSide == HitSide.right) {
-      // Bi trắng ở phía bên phải, chồng lấn theo độ dày chạm
-      final deltaX = 2 * radius * (1.0 - thickness);
-      whiteCenterX = yellowCenterX + deltaX;
-    } else if (stroke.hitSide == HitSide.left) {
-      // Bi trắng ở phía bên trái
-      final deltaX = 2 * radius * (1.0 - thickness);
-      whiteCenterX = yellowCenterX - deltaX;
-    } else {
-      whiteCenterX = yellowCenterX;
-    }
-
-    final whiteCenter = Offset(whiteCenterX, centerY);
-
-    // Nền bi trắng
+    // 3. VẼ BI TRẮNG CHỒNG TƯƠNG ĐỐI
+    // Cách thể hiện nhất quán: dùng lớp trắng bán trong suốt cao cấp (alpha ~ 84% khi lệch, ~ 76% khi đồng tâm),
+    // giúp người dùng luôn nhận biết rõ bi trắng chủ VÀ đồng thời nhìn thấy rõ bi vàng và 11 vạch chia bên dưới!
+    final double whiteAlpha = (separationFactor.abs() < 1e-4) ? 0.76 : 0.84;
     final whitePaint = Paint()
-      ..color = Colors.white
+      ..color = Colors.white.withValues(alpha: whiteAlpha)
       ..style = PaintingStyle.fill;
     canvas.drawCircle(whiteCenter, radius, whitePaint);
 
-    // Viền bi trắng
+    // Viền bi trắng sắc nét
     final whiteBorderPaint = Paint()
       ..color = const Color(0xFF37474F)
-      ..strokeWidth = isLarge ? 2.0 : 1.0
+      ..strokeWidth = isLarge ? 1.8 : 1.1
       ..style = PaintingStyle.stroke;
     canvas.drawCircle(whiteCenter, radius, whiteBorderPaint);
 
-    // 3. CHẤM MŨI CƠ ĐỎ TRÊN BI TRẮNG (DÙNG CHUNG NGUỒN VỚI ÉP PHÊ)
-    const refRadiusMm = CueTipConvention.referenceBallRadiusMm;
-    final maxOffsetPx = radius * 0.82;
-    final offX = (stroke.tipXMm / refRadiusMm) * maxOffsetPx;
-    final offZ = (stroke.tipZMm / refRadiusMm) * maxOffsetPx;
-    var dotCenter = Offset(whiteCenter.dx + offX, whiteCenter.dy - offZ);
-
-    final dist = (dotCenter - whiteCenter).distance;
-    final maxDist = radius - (isLarge ? 6.0 : 3.0);
-    if (dist > maxDist && dist > 1e-6) {
-      dotCenter = whiteCenter + (dotCenter - whiteCenter) * (maxDist / dist);
+    // Khi đồng tâm (chính tâm hoặc tràn mặt 12/12): vẽ thêm viền ngoài màu cam nổi bật để phân biệt rõ cả 2 bi
+    if (separationFactor.abs() < 1e-4) {
+      final hintBorderPaint = Paint()
+        ..color = const Color(0xFFFFA000)
+        ..strokeWidth = isLarge ? 1.6 : 1.0
+        ..style = PaintingStyle.stroke;
+      canvas.drawCircle(whiteCenter, radius + (isLarge ? 2.5 : 1.5), hintBorderPaint);
     }
 
-    final dotRadius = isLarge ? 5.0 : 2.5;
+    // 4. CHẤM MŨI CƠ ĐỎ TRÊN BI TRẮNG (DÙNG CHUNG PHÉP ĐỔI HÌNH HỌC VỚI ÉP PHÊ)
+    final dotRadius = isLarge ? 4.5 : 2.5;
+    final dotCenter = CueTipGeometry.tipDotCenter(
+      ballCenter: whiteCenter,
+      ballRadiusPx: radius,
+      tipXMm: stroke.tipXMm,
+      tipZMm: stroke.tipZMm,
+      dotRadiusPx: dotRadius,
+    );
+
     canvas.drawCircle(
       dotCenter,
       dotRadius,
@@ -183,7 +194,8 @@ class HitThicknessPainter extends CustomPainter {
   }
 }
 
-/// Painter vẽ mặt bi trắng với hai trục chữ thập qua tâm và chấm đỏ vị trí mũi cơ.
+/// Painter vẽ mặt bi trắng với hai trục chữ thập qua tâm, 4 vòng mức quy ước và chấm đỏ vị trí mũi cơ.
+/// Khớp chính xác giá trị milimét quy ước với hình học hiển thị.
 class CueTipPainter extends CustomPainter {
   final StrokeParameters stroke;
   final bool isLarge;
@@ -192,8 +204,8 @@ class CueTipPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    final radius = min(size.width, size.height) / 2 - (isLarge ? 4.0 : 2.0);
+    final center = Offset(size.width / 2.0, size.height / 2.0);
+    final radius = min(size.width, size.height) / 2.0 - (isLarge ? 6.0 : 2.5);
 
     // Nền bi trắng
     final whitePaint = Paint()
@@ -227,32 +239,29 @@ class CueTipPainter extends CustomPainter {
       axisPaint,
     );
 
-    // Khi xem phóng to trong dialog: vẽ 4 vòng tròn đồng tâm mờ biểu thị 4 mức quy ước
+    // 4 vòng tròn đồng tâm khớp đúng 4 mức quy ước (1 mức = 3.84375 mm, mức 4 = 15.375 mm)
     if (isLarge) {
       final ringPaint = Paint()
-        ..color = const Color(0x3390A4AE)
+        ..color = const Color(0x3890A4AE)
         ..strokeWidth = 1.0
         ..style = PaintingStyle.stroke;
+
       for (var lvl = 1; lvl <= 4; lvl++) {
-        final rLvl = radius * 0.85 * (lvl / 4.0);
+        final rLvl = CueTipGeometry.levelRadiusPx(lvl, radius);
         canvas.drawCircle(center, rLvl, ringPaint);
       }
     }
 
-    // Chấm đỏ vị trí mũi cơ
-    const refRadiusMm = CueTipConvention.referenceBallRadiusMm;
-    final maxOffsetPx = radius * 0.85;
-    final offX = (stroke.tipXMm / refRadiusMm) * maxOffsetPx;
-    final offZ = (stroke.tipZMm / refRadiusMm) * maxOffsetPx;
-    var dotCenter = Offset(center.dx + offX, center.dy - offZ);
+    // Chấm đỏ vị trí mũi cơ (dùng chung CueTipGeometry.tipDotCenter)
+    final dotRadius = isLarge ? 5.5 : 2.8;
+    final dotCenter = CueTipGeometry.tipDotCenter(
+      ballCenter: center,
+      ballRadiusPx: radius,
+      tipXMm: stroke.tipXMm,
+      tipZMm: stroke.tipZMm,
+      dotRadiusPx: dotRadius,
+    );
 
-    final dist = (dotCenter - center).distance;
-    final maxDist = radius - (isLarge ? 6.0 : 3.0);
-    if (dist > maxDist && dist > 1e-6) {
-      dotCenter = center + (dotCenter - center) * (maxDist / dist);
-    }
-
-    final dotRadius = isLarge ? 6.0 : 3.0;
     canvas.drawCircle(
       dotCenter,
       dotRadius,
@@ -302,7 +311,7 @@ class HitThicknessPreviewWidget extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               CustomPaint(
-                size: const Size(60.0, 34.0),
+                size: const Size(66.0, 34.0),
                 painter: HitThicknessPainter(stroke, isLarge: false),
               ),
               const SizedBox(height: 1.0),
@@ -436,6 +445,7 @@ class ForcePreviewWidget extends StatelessWidget {
 }
 
 /// Dialog chỉnh sửa Chạm trái (Độ dày 12 phần, má chạm, tràn mặt)
+/// Bảo toàn tuyệt đối độ dày cũ (eighths / exact), chỉ chuyển sang k/12 khi người dùng chủ động kéo slider.
 class HitThicknessDialog extends StatefulWidget {
   final StrokeParameters initialStroke;
   final ValueChanged<StrokeParameters> onApply;
@@ -452,24 +462,26 @@ class HitThicknessDialog extends StatefulWidget {
 
 class _HitThicknessDialogState extends State<HitThicknessDialog> {
   late StrokeParameters _current;
+  late int _sliderTwelfths;
+  bool _userChangedThickness = false;
 
   @override
   void initState() {
     super.initState();
+    // BẢO TOÀN ĐỘ DÀY CŨ: Không đổi thicknessMode hoặc làm tròn trong initState!
     _current = widget.initialStroke;
-    // Nếu chưa ở chế độ twelfths, chuyển sang twelfths nhưng giữ nguyên tỷ lệ gần nhất
-    if (_current.thicknessMode != HitThicknessMode.twelfths) {
-      final curFrac = _current.effectiveThicknessFraction;
-      final k = (curFrac * 12.0).round().clamp(1, 12);
-      _current = _current.copyWith(
-        thicknessMode: HitThicknessMode.twelfths,
-        twelfthCount: k,
-      );
-    }
+    final curFrac = _current.effectiveThicknessFraction;
+    _sliderTwelfths = (_current.thicknessMode == HitThicknessMode.twelfths)
+        ? _current.twelfthCount
+        : (curFrac * 12.0).round().clamp(1, 12);
+    _userChangedThickness = false;
   }
 
   @override
   Widget build(BuildContext context) {
+    final isLegacyEighths = _current.thicknessMode == HitThicknessMode.eighths && !_userChangedThickness;
+    final isExactFraction = _current.thicknessMode == HitThicknessMode.exact && !_userChangedThickness;
+
     return AlertDialog(
       title: const Text('Chạm trái / Độ dày tiếp xúc'),
       content: SizedBox(
@@ -481,15 +493,18 @@ class _HitThicknessDialogState extends State<HitThicknessDialog> {
             children: [
               // Preview trực quan phóng to
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 8.0),
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 10.0),
                 decoration: BoxDecoration(
                   color: const Color(0xFF1E2124),
                   borderRadius: BorderRadius.circular(16.0),
                   border: Border.all(color: Colors.white24),
                 ),
-                child: CustomPaint(
-                  size: const Size(130.0, 68.0),
-                  painter: HitThicknessPainter(_current, isLarge: true),
+                child: Center(
+                  child: CustomPaint(
+                    size: const Size(180.0, 72.0),
+                    painter: HitThicknessPainter(_current, isLarge: true),
+                  ),
                 ),
               ),
               const SizedBox(height: 6.0),
@@ -498,6 +513,40 @@ class _HitThicknessDialogState extends State<HitThicknessDialog> {
                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.0),
                 textAlign: TextAlign.center,
               ),
+
+              // Chỉ báo chế độ cũ (nếu có)
+              if (isLegacyEighths) ...[
+                const SizedBox(height: 4.0),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 3.0),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(6.0),
+                    border: Border.all(color: Colors.amber.withValues(alpha: 0.4)),
+                  ),
+                  child: Text(
+                    'Đang giữ giá trị gốc: ${_current.eighthCount}/8 bi (chưa chuyển sang 12 phần)',
+                    style: const TextStyle(fontSize: 11.0, color: Colors.amber),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ] else if (isExactFraction) ...[
+                const SizedBox(height: 4.0),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 3.0),
+                  decoration: BoxDecoration(
+                    color: Colors.teal.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(6.0),
+                    border: Border.all(color: Colors.teal.withValues(alpha: 0.4)),
+                  ),
+                  child: Text(
+                    'Đang giữ giá trị chính xác: ${_current.exactThicknessValue ?? _current.effectiveThicknessFraction}',
+                    style: const TextStyle(fontSize: 11.0, color: Colors.tealAccent),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ],
+
               const Divider(height: 18.0),
 
               // Chọn má chạm
@@ -561,28 +610,32 @@ class _HitThicknessDialogState extends State<HitThicknessDialog> {
                 },
               ),
 
-              // Slider 12 phần
+              // Slider 12 phần: Chỉ khi người dùng chủ động kéo mới đổi sang twelfths
               if (!_current.isFullFace) ...[
                 const SizedBox(height: 6.0),
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    'Độ dày chạm: ${_current.twelfthCount}/12 bi',
+                    _userChangedThickness || _current.thicknessMode == HitThicknessMode.twelfths
+                        ? 'Độ dày chạm: $_sliderTwelfths/12 bi'
+                        : 'Chỉnh sang quy ước 12 phần: $_sliderTwelfths/12 bi',
                     style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent),
                   ),
                 ),
                 Slider(
                   key: const Key('hit_thickness_twelfths_slider'),
-                  value: _current.twelfthCount.toDouble(),
+                  value: _sliderTwelfths.toDouble(),
                   min: 1.0,
                   max: 12.0,
                   divisions: 11,
-                  label: '${_current.twelfthCount}/12',
+                  label: '$_sliderTwelfths/12',
                   onChanged: (val) {
                     setState(() {
+                      _userChangedThickness = true;
+                      _sliderTwelfths = val.round();
                       _current = _current.copyWith(
                         thicknessMode: HitThicknessMode.twelfths,
-                        twelfthCount: val.round(),
+                        twelfthCount: _sliderTwelfths,
                       );
                     });
                   },
@@ -601,6 +654,7 @@ class _HitThicknessDialogState extends State<HitThicknessDialog> {
         FilledButton(
           key: const Key('hit_thickness_apply_button'),
           onPressed: () {
+            // Nếu người dùng không chủ động chỉnh độ dày, giữ nguyên mode và giá trị gốc!
             widget.onApply(_current);
             Navigator.of(context).pop();
           },
@@ -611,7 +665,8 @@ class _HitThicknessDialogState extends State<HitThicknessDialog> {
   }
 }
 
-/// Dialog chỉnh sửa Ép phê / Điểm mũi cơ (kéo chấm trên mặt bi hoặc chọn 4 mức)
+/// Dialog chỉnh sửa Ép phê / Điểm mũi cơ (kéo chạm trực quan, nhập X/Z, chọn 4 mức)
+/// Dùng chung CueTipGeometry, khớp đúng các vòng mức quy ước, bổ sung nhập X/Z chính xác.
 class CueTipDialog extends StatefulWidget {
   final StrokeParameters initialStroke;
   final ValueChanged<StrokeParameters> onApply;
@@ -628,32 +683,61 @@ class CueTipDialog extends StatefulWidget {
 
 class _CueTipDialogState extends State<CueTipDialog> {
   late StrokeParameters _current;
+  late TextEditingController _xCtrl;
+  late TextEditingController _zCtrl;
 
   @override
   void initState() {
     super.initState();
     _current = widget.initialStroke;
+    _xCtrl = TextEditingController(text: _current.tipXMm.toStringAsFixed(2));
+    _zCtrl = TextEditingController(text: _current.tipZMm.toStringAsFixed(2));
+  }
+
+  @override
+  void dispose() {
+    _xCtrl.dispose();
+    _zCtrl.dispose();
+    super.dispose();
   }
 
   void _handleTouch(Offset localPos, double ballSize) {
-    final center = ballSize / 2;
-    final radius = center - 4.0;
-    final dx = localPos.dx - center;
-    final dy = localPos.dy - center;
+    final center = Offset(ballSize / 2.0, ballSize / 2.0);
+    final radius = ballSize / 2.0 - 6.0;
+    final dx = localPos.dx - center.dx;
+    final dy = localPos.dy - center.dy;
 
-    const refRadiusMm = CueTipConvention.referenceBallRadiusMm;
-    final maxOffsetPx = radius * 0.85;
+    // Đổi pixel -> mm dùng CueTipGeometry duy nhất
+    var xMm = CueTipGeometry.pxToMm(dx, radius);
+    var zMm = -CueTipGeometry.pxToMm(dy, radius);
 
-    // Đổi pixel -> mm
-    var xMm = (dx / maxOffsetPx) * refRadiusMm;
-    var zMm = -(dy / maxOffsetPx) * refRadiusMm;
-
-    // Giới hạn trong 4 mức quy ước (-15.375 .. +15.375)
-    xMm = xMm.clamp(-CueTipConvention.fourLevelMaxMm, CueTipConvention.fourLevelMaxMm);
-    zMm = zMm.clamp(-CueTipConvention.fourLevelMaxMm, CueTipConvention.fourLevelMaxMm);
+    // Giới hạn trong bán kính bi reference 30.75 mm
+    final dist = sqrt(xMm * xMm + zMm * zMm);
+    const maxMm = CueTipConvention.referenceBallRadiusMm - 1.0;
+    if (dist > maxMm && dist > 1e-6) {
+      xMm = xMm * (maxMm / dist);
+      zMm = zMm * (maxMm / dist);
+    }
 
     setState(() {
       _current = _current.copyWith(tipXMm: xMm, tipZMm: zMm);
+      _xCtrl.text = xMm.toStringAsFixed(2);
+      _zCtrl.text = zMm.toStringAsFixed(2);
+    });
+  }
+
+  void _setLevel({int? xLevel, int? zLevel}) {
+    final newX = xLevel != null
+        ? (xLevel * CueTipConvention.fourLevelStepMm)
+        : _current.tipXMm;
+    final newZ = zLevel != null
+        ? (zLevel * CueTipConvention.fourLevelStepMm)
+        : _current.tipZMm;
+
+    setState(() {
+      _current = _current.copyWith(tipXMm: newX, tipZMm: newZ);
+      _xCtrl.text = newX.toStringAsFixed(2);
+      _zCtrl.text = newZ.toStringAsFixed(2);
     });
   }
 
@@ -689,58 +773,174 @@ class _CueTipDialogState extends State<CueTipDialog> {
                   ),
                 ),
               ),
-            const SizedBox(height: 12.0),
-            // Hiển thị quy ước 4 mức
-            Container(
-              padding: const EdgeInsets.all(8.0),
-              decoration: BoxDecoration(
-                color: Colors.grey.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(8.0),
+              const SizedBox(height: 10.0),
+
+              // Hiển thị quy ước 4 mức
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(8.0),
+                decoration: BoxDecoration(
+                  color: Colors.grey.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8.0),
+                ),
+                child: Column(
+                  children: [
+                    Text(
+                      'Ngang (X): ${_current.horizontalTipLabel}',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.0),
+                    ),
+                    const SizedBox(height: 4.0),
+                    Text(
+                      'Đứng (Z): ${_current.verticalTipLabel}',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.0),
+                    ),
+                  ],
+                ),
               ),
-              child: Column(
+              const SizedBox(height: 10.0),
+
+              // Bổ sung ô nhập X và Z chính xác (mm)
+              Row(
                 children: [
-                  Text(
-                    'Ngang (X): ${_current.horizontalTipLabel}',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.0),
+                  Expanded(
+                    child: TextField(
+                      key: const Key('cue_tip_x_input'),
+                      controller: _xCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                      decoration: const InputDecoration(
+                        labelText: 'X (mm)',
+                        hintText: '- trái / + phải',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (val) {
+                        final parsed = double.tryParse(val.trim());
+                        if (parsed != null && parsed.isFinite) {
+                          setState(() {
+                            _current = _current.copyWith(tipXMm: parsed.clamp(-30.0, 30.0));
+                          });
+                        }
+                      },
+                    ),
                   ),
-                  const SizedBox(height: 4.0),
-                  Text(
-                    'Đứng (Z): ${_current.verticalTipLabel}',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.0),
+                  const SizedBox(width: 8.0),
+                  Expanded(
+                    child: TextField(
+                      key: const Key('cue_tip_z_input'),
+                      controller: _zCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Z (mm)',
+                        hintText: '- dưới / + trên',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (val) {
+                        final parsed = double.tryParse(val.trim());
+                        if (parsed != null && parsed.isFinite) {
+                          setState(() {
+                            _current = _current.copyWith(tipZMm: parsed.clamp(-30.0, 30.0));
+                          });
+                        }
+                      },
+                    ),
                   ),
                 ],
               ),
-            ),
-            const SizedBox(height: 12.0),
+              const SizedBox(height: 8.0),
 
-            // Nút về tâm
-            OutlinedButton.icon(
-              key: const Key('cue_tip_reset_center_button'),
-              icon: const Icon(Icons.filter_center_focus, size: 16.0),
-              label: const Text('Về chính tâm bi (0, 0)'),
-              onPressed: () {
-                setState(() {
-                  _current = _current.copyWith(tipXMm: 0.0, tipZMm: 0.0);
-                });
-              },
-            ),
+              // Chọn nhanh các mức ngang chuẩn
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Chọn mức ngang chuẩn:', style: TextStyle(fontSize: 12.0, fontWeight: FontWeight.w600)),
+              ),
+              const SizedBox(height: 4.0),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 4.0,
+                runSpacing: 4.0,
+                children: [
+                  ActionChip(
+                    label: const Text('Trái 4'),
+                    onPressed: () => _setLevel(xLevel: -4),
+                  ),
+                  ActionChip(
+                    label: const Text('Trái 2'),
+                    onPressed: () => _setLevel(xLevel: -2),
+                  ),
+                  ActionChip(
+                    label: const Text('Tâm'),
+                    onPressed: () => _setLevel(xLevel: 0),
+                  ),
+                  ActionChip(
+                    label: const Text('Phải 2'),
+                    onPressed: () => _setLevel(xLevel: 2),
+                  ),
+                  ActionChip(
+                    label: const Text('Phải 4'),
+                    onPressed: () => _setLevel(xLevel: 4),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8.0),
 
-            const SizedBox(height: 12.0),
-            // Chọn kích thước đầu cơ
-            const Text(
-              'Đường kính đầu cơ:',
-              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.0),
-            ),
-            const SizedBox(height: 4.0),
-            Wrap(
-              alignment: WrapAlignment.center,
-              spacing: 6.0,
-              runSpacing: 4.0,
-              children: CueTipConvention.standardTipDiametersMm.map((d) {
-                final isSel = (_current.tipDiameterMm - d).abs() < 0.01;
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                  child: ChoiceChip(
+              // Chọn nhanh các mức đứng chuẩn
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Chọn mức đứng chuẩn:', style: TextStyle(fontSize: 12.0, fontWeight: FontWeight.w600)),
+              ),
+              const SizedBox(height: 4.0),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 4.0,
+                runSpacing: 4.0,
+                children: [
+                  ActionChip(
+                    label: const Text('Dưới 4'),
+                    onPressed: () => _setLevel(zLevel: -4),
+                  ),
+                  ActionChip(
+                    label: const Text('Dưới 2'),
+                    onPressed: () => _setLevel(zLevel: -2),
+                  ),
+                  ActionChip(
+                    label: const Text('Tâm'),
+                    onPressed: () => _setLevel(zLevel: 0),
+                  ),
+                  ActionChip(
+                    label: const Text('Trên 2'),
+                    onPressed: () => _setLevel(zLevel: 2),
+                  ),
+                  ActionChip(
+                    label: const Text('Trên 4'),
+                    onPressed: () => _setLevel(zLevel: 4),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8.0),
+
+              // Nút về tâm
+              OutlinedButton.icon(
+                key: const Key('cue_tip_reset_center_button'),
+                icon: const Icon(Icons.filter_center_focus, size: 16.0),
+                label: const Text('Về chính tâm bi (0, 0)'),
+                onPressed: () => _setLevel(xLevel: 0, zLevel: 0),
+              ),
+
+              const SizedBox(height: 10.0),
+              // Chọn kích thước đầu cơ
+              const Text(
+                'Đường kính đầu cơ:',
+                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.0),
+              ),
+              const SizedBox(height: 4.0),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 6.0,
+                runSpacing: 4.0,
+                children: CueTipConvention.standardTipDiametersMm.map((d) {
+                  final isSel = (_current.tipDiameterMm - d).abs() < 0.01;
+                  return ChoiceChip(
                     label: Text('$d mm'),
                     selected: isSel,
                     onSelected: (sel) {
@@ -748,15 +948,14 @@ class _CueTipDialogState extends State<CueTipDialog> {
                         setState(() => _current = _current.copyWith(tipDiameterMm: d));
                       }
                     },
-                  ),
-                );
-              }).toList(),
-            ),
-          ],
+                  );
+                }).toList(),
+              ),
+            ],
+          ),
         ),
       ),
-    ),
-    actions: [
+      actions: [
         TextButton(
           key: const Key('cue_tip_cancel_button'),
           onPressed: () => Navigator.of(context).pop(),
@@ -765,6 +964,7 @@ class _CueTipDialogState extends State<CueTipDialog> {
         FilledButton(
           key: const Key('cue_tip_apply_button'),
           onPressed: () {
+            // Chỉ cập nhật tipXMm, tipZMm, tipDiameterMm mà không đổi độ dày, má chạm, hay đường bi!
             widget.onApply(_current);
             Navigator.of(context).pop();
           },
@@ -775,7 +975,7 @@ class _CueTipDialogState extends State<CueTipDialog> {
   }
 }
 
-/// Dialog chỉnh sửa Lực đánh (0..100%, slider + ô nhập số, chặn ngoài miền)
+/// Dialog chỉnh sửa Lực đánh (0..100%, slider + ô nhập số, bảo toàn ghi chú lực văn bản cũ)
 class ForceDialog extends StatefulWidget {
   final StrokeParameters initialStroke;
   final ValueChanged<StrokeParameters> onApply;
@@ -856,14 +1056,14 @@ class _ForceDialogState extends State<ForceDialog> {
                   final rounded = val.round();
                   setState(() {
                     _forceVal = rounded;
-                    _error = null;
                     _textCtrl.text = rounded.toString();
+                    _error = null;
                   });
                 },
               ),
-              const SizedBox(height: 8.0),
+              const SizedBox(height: 12.0),
               TextField(
-                key: const Key('force_number_input'),
+                key: const Key('force_input_field'),
                 controller: _textCtrl,
                 keyboardType: TextInputType.number,
                 decoration: InputDecoration(
@@ -874,6 +1074,13 @@ class _ForceDialogState extends State<ForceDialog> {
                 ),
                 onChanged: _onTextChanged,
               ),
+              if (widget.initialStroke.forceText.trim().isNotEmpty) ...[
+                const SizedBox(height: 10.0),
+                Text(
+                  'Ghi chú lực hiện tại: "${widget.initialStroke.forceText.trim()}" (được bảo toàn)',
+                  style: const TextStyle(fontSize: 12.0, color: Colors.white70, fontStyle: FontStyle.italic),
+                ),
+              ],
             ],
           ),
         ),
@@ -889,9 +1096,10 @@ class _ForceDialogState extends State<ForceDialog> {
           onPressed: _error != null
               ? null
               : () {
+                  // BẢO TOÀN GHI CHÚ LỰC BẰNG VĂN BẢN KHI CHỌN LỰC PHẦN TRĂM
                   final updated = widget.initialStroke.copyWith(
                     forcePercent: _forceVal,
-                    forceText: '$_forceVal%',
+                    forceText: widget.initialStroke.forceText,
                   );
                   widget.onApply(updated);
                   Navigator.of(context).pop();

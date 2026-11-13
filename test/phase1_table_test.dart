@@ -17,6 +17,14 @@ void main() {
     databaseFactory = databaseFactoryFfiNoIsolate;
   });
 
+  Future<void> ensureContextPanelExpanded(WidgetTester tester) async {
+    final expandBtn = find.byKey(const Key('floating_panel_expand_button'));
+    if (expandBtn.evaluate().isNotEmpty) {
+      await tester.tap(expandBtn);
+      await tester.pumpAndSettle();
+    }
+  }
+
   group('A.2 & A.3: Tính bất biến và kiểm tra toàn vẹn DiagramScene', () {
     test('F.8: Danh sách trong DiagramScene bất biến và bản cũ không bị sửa theo thao tác sau',
         () {
@@ -380,6 +388,7 @@ void main() {
         MaterialApp(home: TableStageScreen(controller: controller)),
       );
       await tester.pumpAndSettle();
+      await ensureContextPanelExpanded(tester);
 
       final canvasFinder = find.byKey(const Key('billiard_table_canvas'));
       final canvasTopLeft = tester.getTopLeft(canvasFinder);
@@ -421,6 +430,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      await ensureContextPanelExpanded(tester);
       await tester.tap(find.byKey(const Key('open_xy_button')));
       await tester.pumpAndSettle();
 
@@ -634,6 +644,7 @@ void main() {
         MaterialApp(home: TableStageScreen(controller: controller)),
       );
       await tester.pumpAndSettle();
+      await ensureContextPanelExpanded(tester);
 
       final canvasFinder = find.byKey(const Key('billiard_table_canvas'));
       final canvasTopLeft = tester.getTopLeft(canvasFinder);
@@ -722,6 +733,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      await ensureContextPanelExpanded(tester);
       // Bấm Đặt khi không sửa X/Y -> không di chuyển bi, không tạo Undo
       await tester.tap(find.byKey(const Key('open_xy_button')));
       await tester.pumpAndSettle();
@@ -778,6 +790,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      await ensureContextPanelExpanded(tester);
       await tester.tap(find.byKey(const Key('open_xy_button')));
       await tester.pumpAndSettle();
       final xField = tester.widget<TextField>(find.byKey(const Key('coord_x_input')));
@@ -823,6 +836,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      await ensureContextPanelExpanded(tester);
       // Bước 1: Đặt bi trắng tới (120, 120)
       await tester.tap(find.byKey(const Key('open_xy_button')));
       await tester.pumpAndSettle();
@@ -880,6 +894,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      await ensureContextPanelExpanded(tester);
       await tester.tap(find.byKey(const Key('open_xy_button')));
       await tester.pumpAndSettle();
 
