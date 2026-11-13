@@ -405,11 +405,9 @@ class TableEditorController extends ChangeNotifier {
     if (isEditingLocked) return false;
     _selectedAnnotationId = annotationId;
     if (annotationId != null) {
+      _selectedBallId = null;
       _selectedPathId = null;
       _selectedVertexIndex = null;
-      _selectedSegmentIndex = null;
-      _selectedControlHandle = null;
-      _selectedAnnotationId = null;
       _selectedSegmentIndex = null;
       _selectedControlHandle = null;
     }

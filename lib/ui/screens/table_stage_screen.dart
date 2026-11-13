@@ -1452,6 +1452,16 @@ class _TableStageScreenState extends State<TableStageScreen> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            IconButton(
+              key: const Key('floating_panel_collapse_button'),
+              tooltip: 'Thu gọn thuộc tính',
+              constraints:
+                  const BoxConstraints(minWidth: 40.0, minHeight: 40.0),
+              padding: EdgeInsets.zero,
+              icon: const Icon(Icons.expand_more, size: 20.0),
+              onPressed: () => setState(() => _contextPanelCollapsed = true),
+            ),
+            const SizedBox(width: 4.0),
             for (final b in _controller.balls) ...[
               ChoiceChip(
                 key: Key('draw_owner_${b.id}'),
@@ -1529,6 +1539,16 @@ class _TableStageScreenState extends State<TableStageScreen> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            IconButton(
+              key: const Key('floating_panel_collapse_button'),
+              tooltip: 'Thu gọn thuộc tính',
+              constraints:
+                  const BoxConstraints(minWidth: 40.0, minHeight: 40.0),
+              padding: EdgeInsets.zero,
+              icon: const Icon(Icons.expand_more, size: 20.0),
+              onPressed: () => setState(() => _contextPanelCollapsed = true),
+            ),
+            const SizedBox(width: 4.0),
             if (path.segments.length > 1) ...[
               ActionChip(
                 key: const Key('cycle_segment_button'),
@@ -1688,7 +1708,8 @@ class _TableStageScreenState extends State<TableStageScreen> {
             IconButton(
               key: const Key('floating_panel_collapse_button'),
               tooltip: 'Thu gọn thuộc tính',
-              constraints: const BoxConstraints(minWidth: 40.0, minHeight: 40.0),
+              constraints:
+                  const BoxConstraints(minWidth: 40.0, minHeight: 40.0),
               padding: EdgeInsets.zero,
               icon: const Icon(Icons.expand_more, size: 20.0),
               onPressed: () => setState(() => _contextPanelCollapsed = true),
@@ -1740,6 +1761,15 @@ class _TableStageScreenState extends State<TableStageScreen> {
                   ? null
                   : () => _controller.setToolMode(EditorToolMode.select),
             ),
+            IconButton(
+              key: const Key('floating_panel_collapse_button'),
+              tooltip: 'Thu gọn thuộc tính',
+              constraints:
+                  const BoxConstraints(minWidth: 40.0, minHeight: 40.0),
+              padding: EdgeInsets.zero,
+              icon: const Icon(Icons.expand_more, size: 20.0),
+              onPressed: () => setState(() => _contextPanelCollapsed = true),
+            ),
           ],
         ),
       ),
@@ -1762,6 +1792,16 @@ class _TableStageScreenState extends State<TableStageScreen> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            IconButton(
+              key: const Key('floating_panel_collapse_button'),
+              tooltip: 'Thu gọn thuộc tính',
+              constraints:
+                  const BoxConstraints(minWidth: 40.0, minHeight: 40.0),
+              padding: EdgeInsets.zero,
+              icon: const Icon(Icons.expand_more, size: 20.0),
+              onPressed: () => setState(() => _contextPanelCollapsed = true),
+            ),
+            const SizedBox(width: 4.0),
             Chip(
               label: Text(
                 ann.text.isNotEmpty

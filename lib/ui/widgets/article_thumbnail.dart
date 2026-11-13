@@ -13,8 +13,8 @@ import 'billiard_table_canvas.dart';
 class ArticleThumbnail extends StatefulWidget {
   final Article article;
   final ArticleAssetStore assetStore;
-  final double width;
-  final double height;
+  final double? width;
+  final double? height;
 
   const ArticleThumbnail({
     super.key,
@@ -81,6 +81,9 @@ class _ArticleThumbnailState extends State<ArticleThumbnail> {
 
   Widget _buildPlaceholder(BuildContext context, {bool brokenImage = false}) {
     final colorScheme = Theme.of(context).colorScheme;
+    final isLarge = (widget.width == null ||
+        widget.width == double.infinity ||
+        (widget.width != null && widget.width! > 60.0));
     return Container(
       key: Key('thumb_placeholder_${widget.article.id}'),
       width: widget.width,
@@ -97,14 +100,14 @@ class _ArticleThumbnailState extends State<ArticleThumbnail> {
             brokenImage
                 ? Icons.broken_image_outlined
                 : _placeholderIcon(widget.article.kind),
-            size: 22.0,
+            size: isLarge ? 36.0 : 22.0,
             color: colorScheme.onSurfaceVariant,
           ),
           const SizedBox(height: 2.0),
           Text(
             widget.article.kind.codePrefix,
             style: TextStyle(
-              fontSize: 10.0,
+              fontSize: isLarge ? 12.0 : 10.0,
               fontWeight: FontWeight.w600,
               color: colorScheme.onSurfaceVariant,
             ),
@@ -122,12 +125,11 @@ class _ArticleThumbnailState extends State<ArticleThumbnail> {
         child: ClipRRect(
           key: Key('thumb_scene_${widget.article.id}'),
           borderRadius: BorderRadius.circular(6.0),
-          child: SizedBox(
+          child: Container(
             width: widget.width,
             height: widget.height,
-            child: Center(
-              child: BilliardTableReadOnlyView(scene: firstScene),
-            ),
+            alignment: Alignment.center,
+            child: BilliardTableReadOnlyView(scene: firstScene),
           ),
         ),
       );
@@ -144,6 +146,9 @@ class _ArticleThumbnailState extends State<ArticleThumbnail> {
           if (file == null) {
             return _buildPlaceholder(context, brokenImage: true);
           }
+          final isLarge = (widget.width == null ||
+              widget.width == double.infinity ||
+              (widget.width != null && widget.width! > 80.0));
           return ClipRRect(
             key: Key('thumb_image_${widget.article.id}'),
             borderRadius: BorderRadius.circular(8.0),
@@ -152,7 +157,7 @@ class _ArticleThumbnailState extends State<ArticleThumbnail> {
               height: widget.height,
               child: Image.file(
                 file,
-                cacheWidth: 160,
+                cacheWidth: isLarge ? 360 : 160,
                 fit: BoxFit.cover,
                 errorBuilder: (_, _, _) =>
                     _buildPlaceholder(context, brokenImage: true),

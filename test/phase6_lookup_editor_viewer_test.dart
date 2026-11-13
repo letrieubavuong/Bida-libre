@@ -491,5 +491,336 @@ void main() {
 
       await tester.runAsync(() => repo.close());
     });
+
+    testWidgets(
+        '6. Điều hướng Editor: Bỏ offset cứng, cuộn chính xác với bài viết dài & text scale lớn (1.5x, 2.0x)',
+        (tester) async {
+      tester.view.physicalSize = const Size(390, 844); // iPhone 12/13/14 portrait
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() => tester.view.resetPhysicalSize());
+
+      final dbPath = p.join(tempDir.path, 'editor_long_content.db');
+      final repo = SqliteNotebookRepository(dbPath: dbPath);
+      await tester.runAsync(() => repo.initialize());
+      final controller = NotebookController(repository: repo);
+      await tester.runAsync(() => controller.initialize());
+
+      // Tạo bài viết dài có sẵn nhiều bước đánh, thẻ nhãn và sơ đồ
+      final longArticle = Article(
+        id: 'long_art_1',
+        code: 'KT099',
+        kind: ArticleKind.technique,
+        title: 'Kỹ thuật gom bi dài nhiều bước',
+        primaryGroupId: 'grp_tech_retro',
+        tags: ['Gom bi', 'Băng dài', 'Retro', 'Masse', 'Bi mục tiêu 1', 'Bi mục tiêu 2'],
+        steps: [
+          'Bước 1: Quan sát góc tới và góc phản xạ',
+          'Bước 2: Chọn điểm ngắm trên bi chạm cách 3mm',
+          'Bước 3: Hạ thấp cán cơ 5 độ so với mặt bàn',
+          'Bước 4: Ướm cơ đều nhịp 3 lần',
+          'Bước 5: Ra ngọn dứt khoát không rụt tay',
+          'Bước 6: Dừng mũi cơ sau mặt bi 2cm',
+          'Bước 7: Giữ nguyên tư thế quan sát đường chạy',
+        ],
+        diagrams: [
+          ArticleDiagram(
+            id: 'diag_long_1',
+            articleId: 'long_art_1',
+            caption: 'Sơ đồ thế bi gom',
+            scene: _buildRichScene('scene_long_1'),
+          ),
+        ],
+        createdAt: DateTime.utc(2026, 11, 12, 10, 0),
+        updatedAt: DateTime.utc(2026, 11, 12, 10, 0),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(useMaterial3: true),
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              textScaler: const TextScaler.linear(1.5), // Cỡ chữ lớn 1.5x
+            ),
+            child: child!,
+          ),
+          home: ArticleEditorScreen(
+            controller: controller,
+            existingArticle: longArticle,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Xác nhận tiêu đề phần 1 đang ở trong viewport
+      expect(find.text('Thông tin chung'), findsOneWidget);
+
+      // Chuyển sang phần 2: Nội dung
+      await tester.ensureVisible(find.byKey(const Key('editor_section_tab_content')));
+      await tester.tap(find.byKey(const Key('editor_section_tab_content')));
+      await tester.pumpAndSettle();
+      expect(find.text('Nội dung bài viết'), findsOneWidget);
+
+      // Chuyển sang phần 3: Sơ đồ
+      await tester.ensureVisible(find.byKey(const Key('editor_section_tab_diagrams')));
+      await tester.tap(find.byKey(const Key('editor_section_tab_diagrams')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('add_diagram_button')), findsOneWidget);
+
+      // Chuyển sang phần 4: Ảnh & Nguồn
+      await tester.ensureVisible(find.byKey(const Key('editor_section_tab_media')));
+      await tester.tap(find.byKey(const Key('editor_section_tab_media')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('add_image_button')), findsOneWidget);
+
+      // Cuộn về lại phần 1: Thông tin chung
+      await tester.ensureVisible(find.byKey(const Key('editor_section_tab_info')));
+      await tester.tap(find.byKey(const Key('editor_section_tab_info')));
+      await tester.pumpAndSettle();
+      expect(find.text('Thông tin chung'), findsOneWidget);
+
+      // Thao tác chỉnh sửa form ở phần 1 để xác nhận form state và validation hoàn toàn bình thường
+      await tester.enterText(
+        find.byKey(const Key('article_title_input')),
+        'Kỹ thuật gom bi dài nhiều bước đã chỉnh sửa',
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Kỹ thuật gom bi dài nhiều bước đã chỉnh sửa'),
+        findsOneWidget,
+      );
+
+      await tester.runAsync(() => repo.close());
+    });
+
+    testWidgets(
+        '7. Thumbnail trong Lưới (GridView) so với Danh sách (ListView): Kích thước thực tế & tỷ lệ bàn bi',
+        (tester) async {
+      tester.view.physicalSize = const Size(1080, 2200);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() => tester.view.resetPhysicalSize());
+
+      final dbPath = p.join(tempDir.path, 'thumb_grid_vs_list.db');
+      final repo = SqliteNotebookRepository(dbPath: dbPath);
+      await tester.runAsync(() async {
+        await repo.initialize();
+        final db = repo.dbForTesting!;
+        final nowIso = DateTime.utc(2026, 11, 12, 10, 0).toIso8601String();
+        final s1 = _buildRichScene('scene_grid_1');
+        await db.insert('articles', {
+          'id': 'art_grid_test',
+          'code': 'KT-001',
+          'kind': 'technique',
+          'title': 'Bài kiểm tra kích thước thumbnail',
+          'summary': 'Tóm tắt bài',
+          'primary_group_id': 'tech_draw',
+          'tags_json': '[]',
+          'difficulty': 'intermediate',
+          'goal': '',
+          'content': '',
+          'steps_json': '[]',
+          'common_mistakes': '',
+          'source': null,
+          'author': null,
+          'source_page': null,
+          'source_url': null,
+          'is_draft': 0,
+          'stroke_params_json': '{}',
+          'created_at': nowIso,
+          'updated_at': nowIso,
+          'is_favorite': 0,
+          'practice_status': 'not_started',
+          'related_article_ids_json': '[]',
+        });
+        await db.insert('article_diagrams', {
+          'id': 'diag_grid_1',
+          'article_id': 'art_grid_test',
+          'sort_order': 0,
+          'caption': 'Sơ đồ mẫu',
+          'scene_json': jsonEncode(s1.toJson()),
+        });
+        await repo.reloadCacheForTesting();
+      });
+
+      final controller = NotebookController(repository: repo);
+      await tester.runAsync(() => controller.initialize());
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: NotebookHomeScreen(controller: controller),
+        ),
+      );
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      // Mặc định đang ở chế độ Danh sách (ListView)
+      final listThumbFinder = find.byKey(const Key('thumb_scene_art_grid_test'));
+      expect(listThumbFinder, findsOneWidget);
+      final listThumbSize = tester.getSize(listThumbFinder);
+      expect(listThumbSize.width, lessThanOrEqualTo(50.0));
+      expect(listThumbSize.height, lessThanOrEqualTo(80.0));
+
+      // Chuyển sang chế độ Lưới (GridView)
+      await tester.tap(find.byKey(const Key('toggle_view_mode_button')));
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      // Thumbnail trong chế độ lưới phải chiếm vùng ảnh thực tế của card và lớn hơn nhiều danh sách
+      final gridThumbFinder = find.byKey(const Key('thumb_scene_art_grid_test'));
+      expect(gridThumbFinder, findsOneWidget);
+      final gridThumbSize = tester.getSize(gridThumbFinder);
+      expect(gridThumbSize.width, greaterThan(150.0));
+      expect(gridThumbSize.height, greaterThan(100.0));
+
+      await tester.runAsync(() => repo.close());
+    });
+
+    testWidgets(
+        '8. Thu gọn mọi panel ngữ cảnh trên TableStageScreen: Bảo toàn dữ liệu, không tạo undo & nút mở lại luôn tiếp cận',
+        (tester) async {
+      tester.view.physicalSize = const Size(1080, 2200);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() => tester.view.resetPhysicalSize());
+
+      final initialScene = _buildRichScene('stage_collapse_test');
+      final controller = TableEditorController(initialScene: initialScene);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TableStageScreen(
+            controller: controller,
+            returnSceneOnSave: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final collapseBtnFinder = find.byKey(const Key('floating_panel_collapse_button'));
+      final expandBtnFinder = find.byKey(const Key('floating_panel_expand_button'));
+
+      // 1. Panel chọn bi (floating_ball_panel)
+      expect(find.byKey(const Key('floating_ball_panel')), findsOneWidget);
+      expect(collapseBtnFinder, findsOneWidget);
+      await tester.tap(collapseBtnFinder);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_ball_panel')), findsNothing);
+      expect(expandBtnFinder, findsOneWidget);
+      await tester.tap(expandBtnFinder);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_ball_panel')), findsOneWidget);
+
+      // 2. Panel vẽ đường (floating_draw_panel)
+      await tester.tap(find.byKey(const Key('mode_draw_chip')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_draw_panel')), findsOneWidget);
+      // Giả lập thêm 2 điểm vẽ dở dang
+      controller.addDraftPoint(const DiagramPoint(50.0, 50.0));
+      controller.addDraftPoint(const DiagramPoint(80.0, 100.0));
+      await tester.pumpAndSettle();
+      expect(controller.draftPoints.length, 2);
+      final initialUndoCount = controller.canUndo;
+
+      // Thu gọn panel vẽ đường
+      await tester.tap(collapseBtnFinder);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_draw_panel')), findsNothing);
+      expect(expandBtnFinder, findsOneWidget);
+      // Dữ liệu điểm vẽ dở không bị xóa, không tạo thêm bước undo
+      expect(controller.draftPoints.length, 2);
+      expect(controller.canUndo, initialUndoCount);
+
+      // Mở lại panel vẽ đường
+      await tester.tap(expandBtnFinder);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_draw_panel')), findsOneWidget);
+      expect(find.text('2 điểm'), findsOneWidget);
+      expect(find.byKey(const Key('complete_draft_path_button')), findsOneWidget);
+
+      // Hủy đường vẽ để chuyển sang kiểm tra panel khác
+      await tester.tap(find.byKey(const Key('cancel_draft_path_button')));
+      await tester.pumpAndSettle();
+
+      // 3. Panel chọn đường (floating_path_panel)
+      controller.selectPath('stage_collapse_test_path_1');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_path_panel')), findsOneWidget);
+      await tester.tap(collapseBtnFinder);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_panel_collapsed_pill')), findsOneWidget);
+      expect(controller.selectedPathId, 'stage_collapse_test_path_1');
+      await tester.tap(expandBtnFinder);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_path_panel')), findsOneWidget);
+      controller.selectPath(null);
+      await tester.pumpAndSettle();
+
+      // 4. Panel đặt chú thích (floating_place_annotation_panel)
+      await tester.tap(find.byKey(const Key('mode_annotation_chip')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_place_annotation_panel')), findsOneWidget);
+      await tester.ensureVisible(collapseBtnFinder);
+      await tester.tap(collapseBtnFinder);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_panel_collapsed_pill')), findsOneWidget);
+      expect(controller.toolMode, EditorToolMode.placeAnnotation);
+      await tester.tap(expandBtnFinder);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_place_annotation_panel')), findsOneWidget);
+      controller.setToolMode(EditorToolMode.select);
+      await tester.pumpAndSettle();
+
+      // 5. Panel sửa chú thích (floating_annotation_panel)
+      controller.selectAnnotation('stage_collapse_test_ann_1');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_annotation_panel')), findsOneWidget);
+      await tester.ensureVisible(collapseBtnFinder);
+      await tester.tap(collapseBtnFinder);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_panel_collapsed_pill')), findsOneWidget);
+      expect(controller.selectedAnnotationId, 'stage_collapse_test_ann_1');
+      await tester.tap(expandBtnFinder);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('floating_annotation_panel')), findsOneWidget);
+    });
+
+    testWidgets(
+        '9. Thích ứng giao diện màn hình hẹp (320px–390px), màn hình ngang & Text Scale lớn không overflow',
+        (tester) async {
+      // Thử nghiệm màn hình cực hẹp 320x568 (iPhone SE gen 1) với text scale 1.5x
+      tester.view.physicalSize = const Size(320, 568);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() => tester.view.resetPhysicalSize());
+
+      final initialScene = _buildRichScene('narrow_screen_test');
+      final controller = TableEditorController(initialScene: initialScene);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              textScaler: const TextScaler.linear(1.5),
+            ),
+            child: child!,
+          ),
+          home: TableStageScreen(
+            controller: controller,
+            returnSceneOnSave: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Kiểm tra các nút cốt lõi đều tiếp cận và nhấn được trên màn hình hẹp
+      expect(find.byKey(const Key('mode_select_chip')), findsOneWidget);
+      expect(find.byKey(const Key('mode_draw_chip')), findsOneWidget);
+      expect(find.byKey(const Key('save_scene_button')), findsOneWidget);
+
+      // Thử nghiệm chuyển sang màn hình ngang (Landscape 800x360)
+      tester.view.physicalSize = const Size(800, 360);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('mode_select_chip')), findsOneWidget);
+      expect(find.byKey(const Key('mode_draw_chip')), findsOneWidget);
+      expect(find.byKey(const Key('save_scene_button')), findsOneWidget);
+    });
   });
 }

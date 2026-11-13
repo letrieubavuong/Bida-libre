@@ -660,11 +660,11 @@ class _NotebookHomeScreenState extends State<NotebookHomeScreen> {
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
-                        Center(
-                          child: ArticleThumbnail(
-                            article: article,
-                            assetStore: _controller.assetStore,
-                          ),
+                        ArticleThumbnail(
+                          article: article,
+                          assetStore: _controller.assetStore,
+                          width: double.infinity,
+                          height: double.infinity,
                         ),
                         Positioned(
                           top: 4.0,

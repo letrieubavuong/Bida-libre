@@ -62,22 +62,83 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
   bool _isDisposed = false;
 
   final ScrollController _scrollController = ScrollController();
+  final GlobalKey _infoSectionKey = GlobalKey();
+  final GlobalKey _contentSectionKey = GlobalKey();
+  final GlobalKey _diagramsSectionKey = GlobalKey();
+  final GlobalKey _mediaSectionKey = GlobalKey();
+
+  Future<void> _scrollToSection(int targetIndex) async {
+    if (!_scrollController.hasClients) return;
+    if (targetIndex == 0) {
+      await _scrollController.animateTo(
+        0.0,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+      return;
+    }
+
+    final GlobalKey targetKey = switch (targetIndex) {
+      1 => _contentSectionKey,
+      3 => _diagramsSectionKey,
+      4 => _mediaSectionKey,
+      _ => _infoSectionKey,
+    };
+
+    if (targetKey.currentContext != null) {
+      await Scrollable.ensureVisible(
+        targetKey.currentContext!,
+        alignment: 0.0,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+      return;
+    }
+
+    // Nếu phần tử chưa được render do danh sách dựng theo nhu cầu (lazy ListView):
+    // Ước tính vị trí cuộn sơ bộ để kéo phần tử vào vùng dựng, sau đó dùng
+    // Scrollable.ensureVisible để căn chuẩn tiêu đề phần vào đỉnh màn hình.
+    final maxExtent = _scrollController.position.maxScrollExtent;
+    final totalItems = 7 + _images.length;
+    final ratio = (targetIndex / totalItems).clamp(0.0, 1.0);
+    final initialOffset = (maxExtent * ratio).clamp(0.0, maxExtent);
+
+    _scrollController.jumpTo(initialOffset);
+    await WidgetsBinding.instance.endOfFrame;
+
+    if (targetKey.currentContext != null) {
+      await Scrollable.ensureVisible(
+        targetKey.currentContext!,
+        alignment: 0.0,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeInOut,
+      );
+      return;
+    }
+
+    // Dò bước theo chiều cuộn tương ứng nếu bài viết có nội dung/nhiều bước rất dài
+    for (int step = 0; step < 8; step++) {
+      if (targetKey.currentContext != null) break;
+      final stepDelta = (targetIndex <= 1) ? -400.0 : 400.0;
+      final nextOffset =
+          (_scrollController.offset + stepDelta).clamp(0.0, maxExtent);
+      if ((nextOffset - _scrollController.offset).abs() < 1.0) break;
+      _scrollController.jumpTo(nextOffset);
+      await WidgetsBinding.instance.endOfFrame;
+    }
+
+    if (targetKey.currentContext != null) {
+      await Scrollable.ensureVisible(
+        targetKey.currentContext!,
+        alignment: 0.0,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
 
   void _scrollToIndex(int targetIndex) {
-    if (!_scrollController.hasClients) return;
-    double targetOffset = 0.0;
-    if (targetIndex == 1) {
-      targetOffset = 380.0;
-    } else if (targetIndex == 3) {
-      targetOffset = 850.0;
-    } else if (targetIndex == 4) {
-      targetOffset = 1350.0;
-    }
-    _scrollController.animateTo(
-      targetOffset.clamp(0.0, _scrollController.position.maxScrollExtent),
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeInOut,
-    );
+    _scrollToSection(targetIndex);
   }
 
   /// Cache thumbnail LRU với giới hạn dung lượng/số mục rõ ràng.
@@ -840,6 +901,7 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
           },
           child: Scaffold(
             appBar: AppBar(
+              titleSpacing: 0.0,
               leading: IconButton(
                 key: const Key('editor_back_button'),
                 icon: const Icon(Icons.arrow_back),
@@ -849,6 +911,8 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
                 widget.existingArticle == null
                     ? 'Bài viết mới'
                     : 'Sửa ${widget.existingArticle!.code}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
               bottom: PreferredSize(
                 preferredSize: const Size.fromHeight(48.0),
@@ -903,21 +967,36 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
                 IconButton(
                   key: const Key('preview_article_button'),
                   tooltip: 'Xem trước',
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 36.0, minHeight: 36.0),
                   icon: const Icon(Icons.visibility_outlined),
                   onPressed: busy ? null : _openPreview,
                 ),
                 TextButton(
                   key: const Key('save_draft_button'),
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
                   onPressed: busy ? null : () => _saveArticle(forceDraft: true),
                   child: const Text('Lưu nháp'),
                 ),
                 FilledButton(
                   key: const Key('save_article_button'),
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 6.0),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
                   onPressed:
                       busy ? null : () => _saveArticle(forceDraft: false),
                   child: const Text('Lưu bài'),
                 ),
-                const SizedBox(width: 8.0),
+                const SizedBox(width: 4.0),
               ],
             ),
             body: ListView.builder(
@@ -926,15 +1005,27 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
               itemCount: 7 + _images.length,
               itemBuilder: (context, index) {
                 if (index == 0) {
-                  return _buildGeneralInfoSection(groups, saving);
+                  return KeyedSubtree(
+                    key: _infoSectionKey,
+                    child: _buildGeneralInfoSection(groups, saving),
+                  );
                 } else if (index == 1) {
-                  return _buildContentSection(saving);
+                  return KeyedSubtree(
+                    key: _contentSectionKey,
+                    child: _buildContentSection(saving),
+                  );
                 } else if (index == 2) {
                   return _buildCueSection(saving);
                 } else if (index == 3) {
-                  return _buildDiagramsSection(saving);
+                  return KeyedSubtree(
+                    key: _diagramsSectionKey,
+                    child: _buildDiagramsSection(saving),
+                  );
                 } else if (index == 4) {
-                  return _buildImagesHeader(busy);
+                  return KeyedSubtree(
+                    key: _mediaSectionKey,
+                    child: _buildImagesHeader(busy),
+                  );
                 } else if (index < 5 + _images.length) {
                   final imgIndex = index - 5;
                   return _buildImageCard(imgIndex, busy, saving);
@@ -1185,8 +1276,11 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
           ),
         ),
         const SizedBox(height: 12.0),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 8.0,
+          runSpacing: 4.0,
           children: [
             const Text(
               'Các bước thực hiện',
@@ -1487,8 +1581,11 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const Divider(height: 32.0),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 8.0,
+          runSpacing: 4.0,
           children: [
             Text(
               'Sơ đồ gắn với bài (${_diagrams.length})',
@@ -1584,8 +1681,11 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const Divider(height: 32.0),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 8.0,
+          runSpacing: 4.0,
           children: [
             Text(
               'Ảnh đính kèm (${_images.length})',
