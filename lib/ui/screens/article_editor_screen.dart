@@ -8,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../models/models.dart';
 import '../../repositories/article_asset_store.dart';
 import '../../state/notebook_controller.dart';
+import '../widgets/article_document_editor.dart';
 import '../widgets/billiard_table_canvas.dart';
 import 'article_detail_screen.dart';
 import 'table_stage_screen.dart';
@@ -57,6 +58,8 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
   late List<TextEditingController> _stepControllers;
   late List<TextEditingController> _diagramCaptionControllers;
   late List<TextEditingController> _imageCaptionControllers;
+  late ArticleDocument _document;
+  bool _documentMode = false;
   final List<String> _newlyStagedAssetIds = [];
   bool _isImportingImages = false;
   bool _isDisposed = false;
@@ -218,6 +221,17 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
     _stroke = existing?.strokeParameters ?? const StrokeParameters.defaults();
     _diagrams = List<ArticleDiagram>.from(existing?.diagrams ?? const []);
     _images = List<ArticleImageAttachment>.from(existing?.images ?? const []);
+
+    if (existing?.document != null && existing!.document!.isNotEmpty) {
+      _document = existing.document!;
+      _documentMode = true;
+    } else if (existing != null) {
+      _document = ArticleDocumentConverter.fromArticle(existing);
+      _documentMode = false;
+    } else {
+      _document = const ArticleDocument();
+      _documentMode = false;
+    }
 
     _titleCtrl = TextEditingController(text: existing?.title ?? '');
     _summaryCtrl = TextEditingController(text: existing?.summary ?? '');
@@ -424,6 +438,22 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
       return t.isEmpty ? null : t;
     }
 
+    final rawContent = _contentCtrl.text.trim();
+    final effectiveContent = (_documentMode && _document.isNotEmpty && rawContent.isEmpty)
+        ? ArticleDocumentConverter.extractPlainText(_document)
+        : rawContent;
+
+    final ArticleDocument? effectiveDoc;
+    if (_documentMode && _document.isNotEmpty) {
+      effectiveDoc = _document;
+    } else if (!_documentMode && (rawContent.isNotEmpty || _goalCtrl.text.trim().isNotEmpty)) {
+      effectiveDoc = _document.isNotEmpty
+          ? _document
+          : null;
+    } else {
+      effectiveDoc = _document.isNotEmpty ? _document : null;
+    }
+
     return Article(
       id: _workingArticleId,
       code: widget.existingArticle?.code ?? '',
@@ -434,7 +464,7 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
       tags: _mergedTagsWithPendingInput(),
       difficulty: _difficulty,
       goal: _goalCtrl.text.trim(),
-      content: _contentCtrl.text.trim(),
+      content: effectiveContent,
       steps: steps,
       commonMistakes: _mistakesCtrl.text.trim(),
       source: optText(_sourceCtrl),
@@ -451,6 +481,7 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
       practiceStatus:
           widget.existingArticle?.practiceStatus ?? PracticeStatus.notStarted,
       relatedArticleIds: widget.existingArticle?.relatedArticleIds ?? const [],
+      document: effectiveDoc,
     );
   }
 
@@ -1261,106 +1292,154 @@ class ArticleEditorScreenState extends State<ArticleEditorScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const Divider(height: 32.0),
-        Text(
-          'Nội dung bài viết',
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
-        ),
-        const SizedBox(height: 8.0),
-        TextField(
-          key: const Key('article_goal_input'),
-          controller: _goalCtrl,
-          enabled: !saving,
-          maxLines: 2,
-          decoration: const InputDecoration(
-            labelText: 'Mục tiêu & Tình huống áp dụng',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 10.0),
-        TextField(
-          key: const Key('article_content_input'),
-          controller: _contentCtrl,
-          enabled: !saving,
-          maxLines: 4,
-          decoration: const InputDecoration(
-            labelText: 'Nội dung giải thích',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12.0),
         Wrap(
           alignment: WrapAlignment.spaceBetween,
           crossAxisAlignment: WrapCrossAlignment.center,
-          spacing: 8.0,
-          runSpacing: 4.0,
+          runSpacing: 8.0,
           children: [
-            const Text(
-              'Các bước thực hiện',
-              style: TextStyle(fontWeight: FontWeight.w600),
+            Text(
+              'Nội dung bài viết',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
             ),
-            TextButton.icon(
-              key: const Key('add_step_button'),
-              onPressed: saving
+            SegmentedButton<bool>(
+              showSelectedIcon: false,
+              segments: const [
+                ButtonSegment(
+                  value: false,
+                  label: Text('Mục cổ điển'),
+                ),
+                ButtonSegment(
+                  value: true,
+                  label: Text('Tài liệu khối'),
+                ),
+              ],
+              selected: {_documentMode},
+              onSelectionChanged: saving
                   ? null
-                  : () {
+                  : (set) {
                       setState(() {
-                        _stepControllers.add(
-                          TextEditingController()
-                            ..addListener(_onFormFieldChanged),
-                        );
+                        _documentMode = set.first;
+                        if (_documentMode && _document.isEmpty) {
+                          _document = ArticleDocumentConverter.fromArticle(
+                            _buildCurrentDraft(),
+                          );
+                        }
                       });
                     },
-              icon: const Icon(Icons.add),
-              label: const Text('Thêm bước'),
             ),
           ],
         ),
-        for (var i = 0; i < _stepControllers.length; i++)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8.0),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    key: Key('step_input_$i'),
-                    controller: _stepControllers[i],
-                    enabled: !saving,
-                    decoration: InputDecoration(
-                      labelText: 'Bước ${i + 1}',
-                      isDense: true,
-                      border: const OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Xóa bước',
-                  icon: const Icon(Icons.close),
-                  onPressed: saving
-                      ? null
-                      : () {
-                          setState(() {
-                            final c = _stepControllers.removeAt(i);
-                            c.removeListener(_onFormFieldChanged);
-                            c.dispose();
-                          });
-                        },
-                ),
-              ],
+        const SizedBox(height: 12.0),
+        if (_documentMode) ...[
+          ArticleDocumentEditor(
+            key: const Key('article_document_editor_widget'),
+            article: _buildCurrentDraft(),
+            initialDocument: _document,
+            assetStore: widget.controller.repository.assetStore,
+            onDocumentChanged: (doc) {
+              _document = doc;
+              _onFormFieldChanged();
+            },
+            onAddDiagramRequested: () => _scrollToSection(3),
+            onAddImageRequested: () => _scrollToSection(4),
+          ),
+        ] else ...[
+          TextField(
+            key: const Key('article_goal_input'),
+            controller: _goalCtrl,
+            enabled: !saving,
+            maxLines: 2,
+            decoration: const InputDecoration(
+              labelText: 'Mục tiêu & Tình huống áp dụng',
+              border: OutlineInputBorder(),
             ),
           ),
-        const SizedBox(height: 8.0),
-        TextField(
-          key: const Key('article_mistakes_input'),
-          controller: _mistakesCtrl,
-          enabled: !saving,
-          maxLines: 2,
-          decoration: const InputDecoration(
-            labelText: 'Lưu ý / Lỗi thường gặp',
-            border: OutlineInputBorder(),
+          const SizedBox(height: 10.0),
+          TextField(
+            key: const Key('article_content_input'),
+            controller: _contentCtrl,
+            enabled: !saving,
+            maxLines: 4,
+            decoration: const InputDecoration(
+              labelText: 'Nội dung giải thích',
+              border: OutlineInputBorder(),
+            ),
           ),
-        ),
+          const SizedBox(height: 12.0),
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8.0,
+            runSpacing: 4.0,
+            children: [
+              const Text(
+                'Các bước thực hiện',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              TextButton.icon(
+                key: const Key('add_step_button'),
+                onPressed: saving
+                    ? null
+                    : () {
+                        setState(() {
+                          _stepControllers.add(
+                            TextEditingController()
+                              ..addListener(_onFormFieldChanged),
+                          );
+                        });
+                      },
+                icon: const Icon(Icons.add),
+                label: const Text('Thêm bước'),
+              ),
+            ],
+          ),
+          for (var i = 0; i < _stepControllers.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8.0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      key: Key('step_input_$i'),
+                      controller: _stepControllers[i],
+                      enabled: !saving,
+                      decoration: InputDecoration(
+                        labelText: 'Bước ${i + 1}',
+                        isDense: true,
+                        border: const OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Xóa bước',
+                    icon: const Icon(Icons.close),
+                    onPressed: saving
+                        ? null
+                        : () {
+                            setState(() {
+                              final c = _stepControllers.removeAt(i);
+                              c.removeListener(_onFormFieldChanged);
+                              c.dispose();
+                            });
+                          },
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 8.0),
+          TextField(
+            key: const Key('article_mistakes_input'),
+            controller: _mistakesCtrl,
+            enabled: !saving,
+            maxLines: 2,
+            decoration: const InputDecoration(
+              labelText: 'Lưu ý / Lỗi thường gặp',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ],
       ],
     );
   }

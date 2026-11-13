@@ -22,7 +22,7 @@ typedef SqliteTransactionHook = Future<void> Function(
 /// - Mọi thao tác lưu/sửa/nhân bản/xóa bài + sơ đồ chạy trong transaction nguyên tử.
 /// - Không đụng tới tệp `primary_scene.json` của bàn dựng độc lập từ Phase 2–3.
 class SqliteNotebookRepository implements NotebookRepository {
-  static const int schemaVersion = 3;
+  static const int schemaVersion = 4;
   static const String defaultDbFileName = 'libre_billiard.db';
 
   final String? dbPath;
@@ -180,7 +180,8 @@ class SqliteNotebookRepository implements NotebookRepository {
         updated_at TEXT NOT NULL,
         is_favorite INTEGER NOT NULL,
         practice_status TEXT NOT NULL,
-        related_article_ids_json TEXT NOT NULL
+        related_article_ids_json TEXT NOT NULL,
+        document_json TEXT
       )
     ''');
     await db.execute('''
@@ -317,6 +318,13 @@ class SqliteNotebookRepository implements NotebookRepository {
       }
       await _createPhase4CTables(db);
     }
+    if (oldVersion < 4) {
+      final cols = await db.rawQuery('PRAGMA table_info(articles)');
+      final hasDocJson = cols.any((c) => c['name'] == 'document_json');
+      if (!hasDocJson) {
+        await db.execute('ALTER TABLE articles ADD COLUMN document_json TEXT');
+      }
+    }
   }
 
   /// Khởi tạo nhóm mặc định đúng một lần khi CSDL mới tinh; không ghi đè dữ liệu ở các lần mở sau.
@@ -448,6 +456,15 @@ class SqliteNotebookRepository implements NotebookRepository {
       final id = row['id'] as String;
       final strokeMap =
           jsonDecode(row['stroke_params_json'] as String) as Map<String, dynamic>;
+      ArticleDocument? doc;
+      final rawDocJson = row['document_json'] as String?;
+      if (rawDocJson != null && rawDocJson.trim().isNotEmpty) {
+        try {
+          doc = ArticleDocument.fromJsonString(rawDocJson);
+        } catch (_) {
+          doc = null;
+        }
+      }
       return Article(
         id: id,
         code: row['code'] as String,
@@ -482,6 +499,7 @@ class SqliteNotebookRepository implements NotebookRepository {
                     as List<dynamic>)
                 .map((e) => e as String)
                 .toList(),
+        document: doc,
       );
     }).toList();
 
@@ -829,6 +847,9 @@ class SqliteNotebookRepository implements NotebookRepository {
           'is_favorite': persisted.isFavorite ? 1 : 0,
           'practice_status': persisted.practiceStatus.storageKey,
           'related_article_ids_json': jsonEncode(persisted.relatedArticleIds),
+          'document_json': persisted.document != null
+              ? jsonEncode(persisted.document!.toJson())
+              : null,
         };
 
         // Không dùng INSERT OR REPLACE để tránh kích hoạt ON DELETE CASCADE ngoài ý muốn.
@@ -1001,6 +1022,9 @@ class SqliteNotebookRepository implements NotebookRepository {
           'is_favorite': cloned.isFavorite ? 1 : 0,
           'practice_status': cloned.practiceStatus.storageKey,
           'related_article_ids_json': jsonEncode(cloned.relatedArticleIds),
+          'document_json': cloned.document != null
+              ? jsonEncode(cloned.document!.toJson())
+              : null,
         });
 
         await debugTransactionHook?.call(txn, 'after_duplicate_article_insert');

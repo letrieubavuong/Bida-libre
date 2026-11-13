@@ -204,8 +204,10 @@ class CueTipPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (size.width <= 0 || size.height <= 0) return;
     final center = Offset(size.width / 2.0, size.height / 2.0);
     final radius = min(size.width, size.height) / 2.0 - (isLarge ? 6.0 : 2.5);
+    if (radius <= 0) return;
 
     // Nền bi trắng
     final whitePaint = Paint()

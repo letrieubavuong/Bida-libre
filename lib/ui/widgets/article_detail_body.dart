@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../models/models.dart';
 import '../../repositories/article_asset_store.dart';
+import 'article_document_renderer.dart';
 import 'billiard_table_canvas.dart';
 
 /// Thành phần trình bày nội dung bài viết dùng chung cho cả Màn hình Đọc bài
@@ -142,126 +143,136 @@ class ArticleDetailBody extends StatelessWidget {
           ),
         ],
         const SizedBox(height: 16.0),
-        if (article.goal.isNotEmpty)
-          _DetailSectionCard(
-            title: 'Mục tiêu & Tình huống',
-            child: Text(article.goal),
+        if (article.document != null && article.document!.isNotEmpty) ...[
+          ArticleDocumentRenderer(
+            article: article,
+            document: article.document!,
+            assetStore: assetStore,
+            onLaunchUrl: onLaunchUrl,
+            onOpenDiagramViewer: (idx) => _openDiagramViewer(context, idx),
           ),
-        if (article.content.isNotEmpty)
+        ] else ...[
+          if (article.goal.isNotEmpty)
+            _DetailSectionCard(
+              title: 'Mục tiêu & Tình huống',
+              child: Text(article.goal),
+            ),
+          if (article.content.isNotEmpty)
+            _DetailSectionCard(
+              title: 'Nội dung giải thích',
+              child: Text(article.content),
+            ),
+          if (article.steps.isNotEmpty)
+            _DetailSectionCard(
+              title: 'Các bước thực hiện',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (var i = 0; i < article.steps.length; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6.0),
+                      child: Text('${i + 1}. ${article.steps[i]}'),
+                    ),
+                ],
+              ),
+            ),
+          if (article.commonMistakes.isNotEmpty)
+            _DetailSectionCard(
+              title: 'Lưu ý & Lỗi thường gặp',
+              child: Text(article.commonMistakes),
+            ),
           _DetailSectionCard(
-            title: 'Nội dung giải thích',
-            child: Text(article.content),
-          ),
-        if (article.steps.isNotEmpty)
-          _DetailSectionCard(
-            title: 'Các bước thực hiện',
+            title: 'Thông số cách đánh (Tĩnh)',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                for (var i = 0; i < article.steps.length; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6.0),
-                    child: Text('${i + 1}. ${article.steps[i]}'),
-                  ),
+                Text('• Bi chủ: $cueLabel'),
+                Text('• Độ dày & má bi: ${stroke.thicknessSummary}'),
+                Text('• Mũi cơ ngang: ${stroke.horizontalTipLabel}'),
+                Text('• Mũi cơ dọc: ${stroke.verticalTipLabel}'),
+                Text('• Đầu cơ tham chiếu: ${stroke.tipDiameterMm} mm'),
+                if (stroke.tipNote.isNotEmpty)
+                  Text('• Ghi chú mũi cơ: ${stroke.tipNote}'),
+                if (stroke.forceText.isNotEmpty)
+                  Text('• Lực đánh: ${stroke.forceText}'),
+                if (stroke.strokeStyleText.isNotEmpty)
+                  Text('• Kiểu ra cơ: ${stroke.strokeStyleText}'),
               ],
             ),
           ),
-        if (article.commonMistakes.isNotEmpty)
-          _DetailSectionCard(
-            title: 'Lưu ý & Lỗi thường gặp',
-            child: Text(article.commonMistakes),
-          ),
-        _DetailSectionCard(
-          title: 'Thông số cách đánh (Tĩnh)',
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('• Bi chủ: $cueLabel'),
-              Text('• Độ dày & má bi: ${stroke.thicknessSummary}'),
-              Text('• Mũi cơ ngang: ${stroke.horizontalTipLabel}'),
-              Text('• Mũi cơ dọc: ${stroke.verticalTipLabel}'),
-              Text('• Đầu cơ tham chiếu: ${stroke.tipDiameterMm} mm'),
-              if (stroke.tipNote.isNotEmpty)
-                Text('• Ghi chú mũi cơ: ${stroke.tipNote}'),
-              if (stroke.forceText.isNotEmpty)
-                Text('• Lực đánh: ${stroke.forceText}'),
-              if (stroke.strokeStyleText.isNotEmpty)
-                Text('• Kiểu ra cơ: ${stroke.strokeStyleText}'),
-            ],
-          ),
-        ),
-        if (article.diagrams.isNotEmpty) ...[
-          Text(
-            'Sơ đồ (${article.diagrams.length})',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-          ),
-          const SizedBox(height: 8.0),
-          for (var i = 0; i < article.diagrams.length; i++)
-            Card(
-              margin: const EdgeInsets.only(bottom: 12.0),
-              child: Padding(
-                padding: const EdgeInsets.all(12.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'Sơ đồ ${i + 1}',
-                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                                fontWeight: FontWeight.w600,
-                              ),
-                        ),
-                        TextButton.icon(
-                          key: Key('open_diagram_viewer_$i'),
-                          icon: const Icon(Icons.fullscreen, size: 18.0),
-                          label: const Text('Xem lớn'),
-                          onPressed: () => _openDiagramViewer(context, i),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8.0),
-                    Center(
-                      child: InkWell(
-                        onTap: () => _openDiagramViewer(context, i),
-                        borderRadius: BorderRadius.circular(8.0),
-                        child: SizedBox(
-                          height: 280.0,
-                          child: BilliardTableReadOnlyView(
-                            key: Key('readonly_diagram_$i'),
-                            scene: article.diagrams[i].scene,
+          if (article.diagrams.isNotEmpty) ...[
+            Text(
+              'Sơ đồ (${article.diagrams.length})',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 8.0),
+            for (var i = 0; i < article.diagrams.length; i++)
+              Card(
+                margin: const EdgeInsets.only(bottom: 12.0),
+                child: Padding(
+                  padding: const EdgeInsets.all(12.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Sơ đồ ${i + 1}',
+                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                          ),
+                          TextButton.icon(
+                            key: Key('open_diagram_viewer_$i'),
+                            icon: const Icon(Icons.fullscreen, size: 18.0),
+                            label: const Text('Xem lớn'),
+                            onPressed: () => _openDiagramViewer(context, i),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8.0),
+                      Center(
+                        child: InkWell(
+                          onTap: () => _openDiagramViewer(context, i),
+                          borderRadius: BorderRadius.circular(8.0),
+                          child: SizedBox(
+                            height: 280.0,
+                            child: BilliardTableReadOnlyView(
+                              key: Key('readonly_diagram_$i'),
+                              scene: article.diagrams[i].scene,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    if (article.diagrams[i].caption.isNotEmpty) ...[
-                      const SizedBox(height: 8.0),
-                      Text(article.diagrams[i].caption),
+                      if (article.diagrams[i].caption.isNotEmpty) ...[
+                        const SizedBox(height: 8.0),
+                        Text(article.diagrams[i].caption),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
               ),
+          ],
+          if (article.images.isNotEmpty) ...[
+            const SizedBox(height: 4.0),
+            Text(
+              'Ảnh nguồn đính kèm (${article.images.length})',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
             ),
-        ],
-        if (article.images.isNotEmpty) ...[
-          const SizedBox(height: 4.0),
-          Text(
-            'Ảnh nguồn đính kèm (${article.images.length})',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-          ),
-          const SizedBox(height: 8.0),
-          for (var i = 0; i < article.images.length; i++)
-            _ArticleImageCard(
-              key: Key('detail_image_card_$i'),
-              attachment: article.images[i],
-              index: i,
-              assetStore: assetStore,
-            ),
+            const SizedBox(height: 8.0),
+            for (var i = 0; i < article.images.length; i++)
+              _ArticleImageCard(
+                key: Key('detail_image_card_$i'),
+                attachment: article.images[i],
+                index: i,
+                assetStore: assetStore,
+              ),
+          ],
         ],
         if (article.source != null ||
             article.author != null ||

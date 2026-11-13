@@ -1,3 +1,4 @@
+import 'article_document.dart';
 import 'diagram_scene.dart';
 import 'enums.dart';
 import 'stroke_parameters.dart';
@@ -215,6 +216,7 @@ class Article {
   final bool isFavorite;
   final PracticeStatus practiceStatus;
   final List<String> relatedArticleIds;
+  final ArticleDocument? document;
 
   Article({
     required this.id,
@@ -242,6 +244,7 @@ class Article {
     this.isFavorite = false,
     this.practiceStatus = PracticeStatus.notStarted,
     List<String> relatedArticleIds = const [],
+    this.document,
   })  : tags = List<String>.unmodifiable(tags),
         steps = List<String>.unmodifiable(steps),
         diagrams = List<ArticleDiagram>.unmodifiable(diagrams),
@@ -305,6 +308,8 @@ class Article {
     bool? isFavorite,
     PracticeStatus? practiceStatus,
     List<String>? relatedArticleIds,
+    ArticleDocument? document,
+    bool clearDocument = false,
   }) {
     return Article(
       id: id ?? this.id,
@@ -332,6 +337,7 @@ class Article {
       isFavorite: isFavorite ?? this.isFavorite,
       practiceStatus: practiceStatus ?? this.practiceStatus,
       relatedArticleIds: relatedArticleIds ?? this.relatedArticleIds,
+      document: clearDocument ? null : (document ?? this.document),
     );
   }
 
@@ -362,6 +368,7 @@ class Article {
       'isFavorite': isFavorite,
       'practiceStatus': practiceStatus.storageKey,
       'relatedArticleIds': relatedArticleIds,
+      if (document != null) 'document': document!.toJson(),
     };
   }
 
@@ -413,6 +420,9 @@ class Article {
               ?.map((e) => e as String)
               .toList() ??
           const [],
+      document: json['document'] is Map<String, dynamic>
+          ? ArticleDocument.fromJson(json['document'] as Map<String, dynamic>)
+          : null,
     );
   }
 
